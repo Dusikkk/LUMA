@@ -348,6 +348,7 @@ textarea{resize:vertical;min-height:64px}
       <button class="btn" id="btnMe" hidden title="Сменить пароль">Пароль</button>
       <button class="btn" id="btnLogout" hidden>Выйти</button>
       <button class="btn" id="btnSettings">Настройки <span id="rateHint" class="muted" style="font-size:12px"></span></button>
+      <button class="btn" id="btnImport">Импорт</button>
       <button class="btn primary" id="btnNew">Новая карточка</button>
     </div>
   </header>
@@ -384,7 +385,7 @@ textarea{resize:vertical;min-height:64px}
   <div class="dethead">
     <button class="btn" id="btnBack">← Все конторы</button>
     <div class="dettitle" id="detTitle"></div>
-    <div class="actions"><button class="btn danger" id="btnDelCard">Удалить карточку</button><button class="btn primary" id="btnNewAcc">Новый аккаунт</button></div>
+    <div class="actions"><button class="btn danger" id="btnDelCard">Удалить карточку</button><button class="btn" id="btnImportAcc">Импорт</button><button class="btn primary" id="btnNewAcc">Новый аккаунт</button></div>
   </div>
   <div class="stats" id="stats"></div>
   <div class="barwrap" id="barwrap" hidden><div class="lab"><span>Статусы</span><span id="barTotal"></span></div><div class="bar" id="bar"></div><div class="legend" id="legend"></div></div>
@@ -645,7 +646,7 @@ function showView(v){
   S.view=v;
   $("home").hidden=v!=="home"; $("accView").hidden=v!=="card"; $("analytics").hidden=v!=="analytics"; $("tasks").hidden=v!=="tasks"; $("work").hidden=v!=="work"; $("fin").hidden=v!=="fin";
   document.querySelectorAll(".vtab").forEach(b=>b.classList.toggle("on", b.dataset.view===(v==="card"?"home":v)));
-  $("btnNew").hidden=v!=="home";
+  $("btnNew").hidden=v!=="home"; $("btnImport").hidden=v!=="home";
   if(v==="analytics") renderAnalytics();
   if(v==="tasks") renderTasks();
   if(v==="work") renderWork();
@@ -1085,7 +1086,7 @@ async function resolveNames(){
 
 /* drawer */
 function openDrawer(){ $("drawer").classList.add("open"); $("scrim").classList.add("open"); $("drawer").setAttribute("aria-hidden","false"); }
-function closeDrawer(){ $("drawer").classList.remove("open"); $("scrim").classList.remove("open"); $("drawer").setAttribute("aria-hidden","true"); S.editing=null; }
+function closeDrawer(){ $("drawer").classList.remove("open","wide"); $("scrim").classList.remove("open"); $("drawer").setAttribute("aria-hidden","true"); S.editing=null; }
 
 function field(name,label,val,o={}){
   const cls=o.full?' full':'';
@@ -1377,6 +1378,122 @@ document.addEventListener("keydown",e=>{ if(e.key==="Escape"&&$("drawer").classL
 
 S.view="home";
 render();
+
+/* ================= импорт из Google Таблицы ================= */
+const IMP_FIELDS=[["","— не переносить"],["label","Номер / название"],["owner","Владелец (ФИО)"],["email","Почта"],["accPassword","Пароль"],["phone","Телефон"],
+  ["birthDate","Дата рождения"],["status","Статус"],["startDate","Запуск (дата)"],["deposit","Депозит"],["withdrawn","Выведено"],["expenses","Расходы"],
+  ["method","Способ депозита"],["card","Метка карты"],["cardHolder","Держатель карты"],["cardNumber","Номер карты"],["cardExp","Срок карты"],["cardCvv","CVV"],
+  ["notes","Заметки"],["address","Адрес → в заметки"]];
+// угадываем поле по заголовку; порядок важен — сначала точные. "" = столбец считается сам (выигрыш, %), не переносим
+const IMP_GUESS=[[/выигр|прибыл|profit|%/,""],[/card ?(n|num)|номер карт/,"cardNumber"],[/cvv|cvc/,"cardCvv"],[/держател|holder/,"cardHolder"],
+  [/^date$|срок|exp/,"cardExp"],[/банк|bank|метка/,"card"],[/способ|method/,"method"],[/рожд|birth|^др$/,"birthDate"],[/запуск|старт|start/,"startDate"],
+  [/депоз|deposit|^деп$/,"deposit"],[/вывод|выведен|withdraw/,"withdrawn"],[/расход|комисс|expense/,"expenses"],[/почт|mail/,"email"],[/парол|pass/,"accPassword"],
+  [/телеф|phone|^тел|^номер$/,"phone"],[/фио|владел|owner|^имя|name/,"owner"],[/статус|status/,"status"],[/адрес|address/,"address"],
+  [/описан|заметк|коммент|note/,"notes"],[/^n$|^№$|^#$|акк|назван|label/,"label"]];
+const IMP_STATUS=[[/актив|active|работ/,"active"],[/порез|limit|лимит/,"limit"],[/вериф|verif|kyc/,"verif"],[/блок|block|бан/,"block"],[/отыгр|done|готов/,"done"],[/закрыт|close/,"closed"]];
+const impGuess=h=>{ const s=String(h||"").toLowerCase().replace(/\(.*?\)/g,"").replace(/\s+/g," ").trim(); if(!s) return null; const g=IMP_GUESS.find(([re])=>re.test(s)); return g?g[1]:null; };
+const impNum=v=>{ const s=String(v||"").replace(/[\s ]/g,"").replace(/[^\d,.\-]/g,""); if(!s) return ""; const x=s.replace(/,(?=\d{1,2}$)/,".").replace(/,/g,""); return x!==""&&isFinite(+x)?String(+x):""; };
+function impDate(v){ v=String(v||"").trim(); let m;
+  if((m=v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+  if((m=v.match(/^(\d{1,2})[./](\d{1,2})[./](\d{2}|\d{4})$/))){ let y=m[3]; if(y.length===2) y=(+y>30?"19":"20")+y; return `${y}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`; }
+  return ""; }
+// Google Таблицы копируют строки через Tab; ячейку с переносом строки берут в кавычки
+function parseTSV(t){ const rows=[]; let row=[], cell="";
+  for(let i=0;i<t.length;i++){ const ch=t[i];
+    if(ch==='"'&&cell===""){ let j=i+1, val="";   // кавычки считаем обёрткой, только если внутри есть перенос строки
+      for(;j<t.length;j++){ if(t[j]==='"'){ if(t[j+1]==='"'){ val+='"'; j++; continue; } break; } val+=t[j]; }
+      if(j<t.length&&/\n/.test(val)&&(j+1>=t.length||/[\t\r\n]/.test(t[j+1]))){ cell=val; i=j; continue; } }
+    if(ch==="\t"){ row.push(cell); cell=""; }
+    else if(ch==="\n"||ch==="\r"){ if(ch==="\r"&&t[i+1]==="\n") i++; row.push(cell); rows.push(row); row=[]; cell=""; }
+    else cell+=ch; }
+  if(cell!==""||row.length){ row.push(cell); rows.push(row); }
+  return rows.map(r=>r.map(c=>c.trim())).filter(r=>r.some(Boolean)); }
+
+function impBuild(st,base){
+  const have=new Set(S.accounts.filter(a=>inCard(a,{bookmaker:base.bookmaker,country:base.country})).map(a=>(a.label||"").trim().toLowerCase()).filter(Boolean));
+  const seen=new Set(), now=new Date().toISOString();
+  return st.rows.map(r=>{
+    const d={startDate:"",endDate:"",label:"",status:"",bookmaker:base.bookmaker,country:base.country,owner:"",phone:"",email:"",accPassword:"",birthDate:"",card:"",method:"",
+      cardHolder:"",cardNumber:"",cardExp:"",cardCvv:"",currency:base.currency,deposit:"",withdrawn:"",expenses:"",notes:""};
+    const warn=[], notes=[], addr=[];
+    st.map.forEach((f,i)=>{ const v=(r[i]||"").trim(); if(!f||!v) return;
+      if(f==="deposit"||f==="withdrawn"||f==="expenses"){ const x=impNum(v); if(x==="") warn.push(`не число «${v}»`); else d[f]=x; }
+      else if(f==="birthDate"||f==="startDate"){ const x=impDate(v); if(x) d[f]=x; else warn.push(`дата «${v}» не понята`); }
+      else if(f==="status"){ const s=IMP_STATUS.find(([re])=>re.test(v.toLowerCase())); if(s) d.status=s[1]; else warn.push(`статус «${v}» не понят`); }
+      else if(f==="cardNumber"){ if(/e\+/i.test(v)) warn.push("номер карты испорчен в таблице (E+) — впишите вручную"); else d.cardNumber=v; }
+      else if(f==="notes") notes.push(v); else if(f==="address") addr.push("Адрес: "+v);
+      else d[f]=v; });
+    d.notes=[...notes,...addr].join("\n");
+    if(!d.status) d.status=base.status;
+    const key=d.label.toLowerCase(); let skip="";
+    if(key&&have.has(key)) skip="уже есть в LUMA"; else if(key&&seen.has(key)) skip="повтор в таблице";
+    if(key) seen.add(key); if(!d.label) warn.push("без номера");
+    const doc={...d,currency:(d.currency||"").toUpperCase(),feePaid:!!base.feePaid,
+      blocks:d.status==="block"?[{reason:"Блок аккаунта",date:localToday(),note:"",resolved:false}]:[],
+      partner:base.partner,updatedAt:now,updatedBy:S.uid||""};   // те же поля, что сохраняет форма аккаунта
+    return {doc,warn,skip};
+  }); }
+
+function openImport(){
+  S.editing=null; $("drawer").classList.add("wide"); $("dTitle").textContent="Импорт из таблицы";
+  const c=S.card||{}; const cur0=c.currency||COUNTRY_CUR[(c.country||"").toLowerCase()]||"";
+  $("dBody").innerHTML=`<div class="grid">
+      <label class="f">Контора<input id="iBook" list="dlBook" value="${esc(c.bookmaker||"")}" placeholder="Betano" autocomplete="off"></label>
+      <label class="f">Страна<input id="iCountry" list="dlCountry" value="${esc(c.country||"")}" placeholder="Чехия" autocomplete="off"></label>
+      <label class="f">Валюта<input id="iCur" value="${esc(cur0)}" placeholder="CZK" maxlength="5" autocomplete="off"></label>
+      <label class="f">Партнёр<select id="iPartner">${partnerChips().map(([k,t])=>`<option value="${esc(k)}">${esc(t)}</option>`).join("")}</select></label>
+      <label class="f">Статус, если в таблице нет столбца<select id="iStatus">${Object.entries(STATUSES).map(([k,v])=>`<option value="${k}">${esc(v.t)}</option>`).join("")}</select></label>
+      <label class="check" style="align-self:end;padding-bottom:10px"><input type="checkbox" id="iPaid"> Партнёру уже оплачено</label>
+      <label class="f full">Строки из Google Таблицы<textarea id="iText" rows="5" placeholder="Выделите строки вместе с заголовком, Ctrl+C — и вставьте сюда"></textarea></label>
+    </div><div id="iOut"></div>`;
+  $("dFoot").innerHTML=`<span class="muted" id="iSum" style="font-size:13px"></span><div class="actions"><button class="btn" id="dCancel">Отмена</button><button class="btn primary" id="dSave" disabled>Импортировать</button></div>`;
+  const st={head:[],rows:[],map:[]}; let built=[];
+  const base=()=>({bookmaker:$("iBook").value.trim(),country:$("iCountry").value.trim(),currency:$("iCur").value.trim().toUpperCase(),
+    partner:$("iPartner").value,status:$("iStatus").value,feePaid:$("iPaid").checked});
+  const parse=()=>{ const rows=parseTSV($("iText").value); const g=rows[0]?rows[0].map(impGuess):[];
+    if(g.filter(x=>x!==null).length>=2){ st.head=rows[0]; st.rows=rows.slice(1); st.map=g.map(x=>x||""); }
+    else { st.rows=rows; const w=Math.max(0,...rows.map(r=>r.length)); st.head=Array.from({length:w},(_,i)=>"Столбец "+(i+1));
+      const saved=LS.get("impMap"); st.map=saved&&saved.length===w?saved:st.head.map(()=>""); } };
+  const draw=()=>{ const b=base(); const out=$("iOut");
+    if(!st.rows.length){ out.innerHTML=$("iText").value.trim()?'<div class="hint">Не нашёл строк с данными.</div>':""; $("iSum").textContent=""; $("dSave").disabled=true; return; }
+    built=impBuild(st,b);
+    const ok=built.filter(x=>!x.skip), sk=built.length-ok.length, wn=ok.filter(x=>x.warn.length).length;
+    const opt=f=>IMP_FIELDS.map(([k,t])=>`<option value="${k}" ${k===f?"selected":""}>${esc(t)}</option>`).join("");
+    const show=[["label","Номер"],["owner","Владелец"],["email","Почта"],["deposit","Депозит"],["withdrawn","Выведено"],["status","Статус"]];
+    out.innerHTML=`<div class="sec">Столбцы</div><div class="imp-map">${st.head.map((h,i)=>`<div class="h">${esc(h||"—")}</div><div class="v">${esc((st.rows[0]||[])[i]||"")}</div>
+        <select data-col="${i}">${opt(st.map[i])}</select>`).join("")}</div>
+      ${st.head[0]==="Столбец 1"?'<div class="hint">Строки заголовков нет — выберите поля вручную или скопируйте вместе с заголовком.</div>':""}
+      <div class="sec">Проверка · ${ok.length} к импорту${sk?` · ${sk} пропущу`:""}${wn?` · <span class="imp-w">${wn} с замечаниями</span>`:""}</div>
+      <div class="imp-prev"><table><thead><tr>${show.map(([,t])=>`<th>${t}</th>`).join("")}<th>Замечания</th></tr></thead><tbody>
+      ${built.map(x=>`<tr class="${x.skip?"skip":""}">${show.map(([k])=>`<td>${esc(k==="status"?(STATUSES[x.doc.status]?.t||""):x.doc[k]||"")}</td>`).join("")}
+        <td>${x.skip?`<span class="muted">пропущу: ${esc(x.skip)}</span>`:x.warn.map(w=>`<div class="imp-w">${esc(w)}</div>`).join("")}</td></tr>`).join("")}
+      </tbody></table></div>`;
+    out.querySelectorAll("select[data-col]").forEach(s=>s.onchange=()=>{ st.map[+s.dataset.col]=s.value; LS.set("impMap",st.map); draw(); });
+    $("iSum").textContent=b.bookmaker?`${b.bookmaker}${b.country?" · "+b.country:""} · ${ok.length} акк.`:"Укажите контору";
+    $("dSave").disabled=!ok.length||!b.bookmaker; $("dSave").textContent=`Импортировать ${ok.length}`; };
+  $("iText").addEventListener("input",()=>{ parse(); draw(); });
+  let curTouched=!!cur0; $("iCur").addEventListener("input",()=>{ curTouched=true; draw(); });
+  $("iCountry").addEventListener("input",()=>{ if(!curTouched) $("iCur").value=COUNTRY_CUR[$("iCountry").value.trim().toLowerCase()]||""; draw(); });
+  ["iBook","iPartner","iStatus","iPaid"].forEach(id=>$(id).addEventListener(id==="iBook"?"input":"change",draw));
+  $("dCancel").onclick=closeDrawer;
+  $("dSave").onclick=async()=>{ if(!S.db) return toast("База не подключена.");
+    const items=built.filter(x=>!x.skip).map(x=>({id:newId(),doc:x.doc})); const btn=$("dSave"); btn.disabled=true;
+    const isIn=x=>(Store.data.accounts||[]).some(a=>a.id===x.id);
+    try{
+      for(let i=0;i<items.length;i+=20){ btn.textContent=`Сохраняю ${Math.min(i+20,items.length)} из ${items.length}…`;
+        await writeOps(items.slice(i,i+20).map(x=>({op:"set",path:"accounts/"+x.id,data:x.doc}))); }
+      btn.textContent="Проверяю…"; await syncNow(true);
+      const miss=items.filter(x=>!isIn(x));   // если сервер принял не всё пачкой — досылаем по одному
+      for(const x of miss) await writeOps([{op:"set",path:"accounts/"+x.id,data:x.doc}]);
+      if(miss.length) await syncNow(true);
+      const saved=items.filter(isIn).length;
+      toast(saved===items.length?`Импортировано: ${saved} акк.`:`Сохранилось ${saved} из ${items.length}. Запустите импорт ещё раз — уже добавленные пропустятся.`);
+      closeDrawer();
+    }catch(e){ const saved=items.filter(isIn).length; btn.disabled=false; btn.textContent="Импортировать";
+      toast(e?.code==="invalid_argument"?"Нет прав на запись.":`Сохранилось ${saved} из ${items.length}. Нажмите ещё раз — уже добавленные пропустятся.`); draw(); } };
+  openDrawer(); setTimeout(()=>$(S.card?"iText":"iBook").focus(),60);
+}
+$("btnImport").onclick=openImport; $("btnImportAcc").onclick=openImport;
 
 /* ================= API (Google Apps Script) ================= */
 const API={
