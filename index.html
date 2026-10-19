@@ -287,7 +287,7 @@ th.r,td.r{text-align:right}
 .pill{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
 .st-active{background:var(--s-active);color:var(--s-active-i)} .st-limit{background:var(--s-limit);color:var(--s-limit-i)}
 .st-block{background:var(--s-block);color:var(--s-block-i)} .st-verif{background:var(--s-verif);color:var(--s-verif-i)}
-.st-closed{background:var(--s-closed);color:var(--s-closed-i)} .st-done{background:#0F2640;color:#6FB8FF}
+.st-closed{background:var(--s-closed);color:var(--s-closed-i)} .st-done{background:#0F2640;color:#6FB8FF} .st-stolen{background:#3A1E0E;color:#FF9A52}
 input[type=date]{color-scheme:dark}
 .days{display:block;font-size:11px;color:var(--muted);margin-top:3px}
 .best{color:var(--v1);font-weight:700}
@@ -451,7 +451,7 @@ textarea{resize:vertical;min-height:64px}
 <script>
 const STATUSES = {
   active:{t:"Активен",c:"st-active",col:"#B6FF1A"}, limit:{t:"Порезан",c:"st-limit",col:"#FFC24D"},
-  verif:{t:"Верификация",c:"st-verif",col:"#C79BFF"}, block:{t:"Блок",c:"st-block",col:"#FF6E88"}, done:{t:"Отыграно",c:"st-done",col:"#4DA3FF"}, closed:{t:"Закрыт",c:"st-closed",col:"#8A97B4"}
+  verif:{t:"Верификация",c:"st-verif",col:"#C79BFF"}, block:{t:"Блок",c:"st-block",col:"#FF6E88"}, done:{t:"Отыграно",c:"st-done",col:"#4DA3FF"}, closed:{t:"Закрыт",c:"st-closed",col:"#8A97B4"}, stolen:{t:"Украли",c:"st-stolen",col:"#FF8A3D"}
 };
 const FLAGS = {"чехия":"🇨🇿","италия":"🇮🇹","польша":"🇵🇱","германия":"🇩🇪","испания":"🇪🇸","франция":"🇫🇷","австрия":"🇦🇹","словакия":"🇸🇰","румыния":"🇷🇴","греция":"🇬🇷","португалия":"🇵🇹","нидерланды":"🇳🇱","голландия":"🇳🇱","бельгия":"🇧🇪","венгрия":"🇭🇺","хорватия":"🇭🇷","украина":"🇺🇦","казахстан":"🇰🇿","россия":"🇷🇺","болгария":"🇧🇬","швеция":"🇸🇪","дания":"🇩🇰","финляндия":"🇫🇮","норвегия":"🇳🇴","ирландия":"🇮🇪","англия":"🇬🇧","великобритания":"🇬🇧","швейцария":"🇨🇭","словения":"🇸🇮","сербия":"🇷🇸","литва":"🇱🇹","латвия":"🇱🇻","эстония":"🇪🇪","кипр":"🇨🇾","молдова":"🇲🇩","грузия":"🇬🇪","армения":"🇦🇲","азербайджан":"🇦🇿","турция":"🇹🇷","бразилия":"🇧🇷"};
 const CURRENCIES=["CZK","EUR","PLN","USD","CLP","RON","HUF","UAH","KZT"];
@@ -565,7 +565,7 @@ function renderMoney(list){
 }
 
 const today=()=>new Date().toISOString().slice(0,10);
-const FINAL=["done","block","closed"];
+const FINAL=["done","block","closed","stolen"];
 function daysOf(a){ if(!a.startDate) return null; const s=new Date(a.startDate), e=a.endDate?new Date(a.endDate):new Date();
   const d=Math.round((e-s)/864e5); return isFinite(d)&&d>=0?d:null; }
 const WD=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
@@ -1405,7 +1405,7 @@ const IMP_GUESS=[[/выигр|прибыл|profit|%/,""],[/card ?(n|num)|ном�
   [/депоз|deposit|^деп$/,"deposit"],[/вывод|выведен|withdraw/,"withdrawn"],[/расход|комисс|expense/,"expenses"],[/почт|mail/,"email"],[/парол|pass/,"accPassword"],
   [/телеф|phone|^тел|^номер$/,"phone"],[/фио|владел|owner|^имя|name/,"owner"],[/статус|status/,"status"],[/адрес|address/,"address"],
   [/описан|заметк|коммент|note/,"notes"],[/^n$|^№$|^#$|акк|назван|label/,"label"]];
-const IMP_STATUS=[[/актив|active|работ/,"active"],[/порез|limit|лимит/,"limit"],[/вериф|verif|kyc/,"verif"],[/блок|block|бан/,"block"],[/отыгр|done|готов/,"done"],[/закрыт|close/,"closed"]];
+const IMP_STATUS=[[/актив|active|работ/,"active"],[/порез|limit|лимит/,"limit"],[/вериф|verif|kyc/,"verif"],[/блок|block|бан/,"block"],[/отыгр|done|готов/,"done"],[/закрыт|close/,"closed"],[/укра|stolen|краж/,"stolen"]];
 const impGuess=h=>{ const s=String(h||"").toLowerCase().replace(/\(.*?\)/g,"").replace(/\s+/g," ").trim(); if(!s) return null; const g=IMP_GUESS.find(([re])=>re.test(s)); return g?g[1]:null; };
 const impNum=v=>{ const s=String(v||"").replace(/[\s ]/g,"").replace(/[^\d,.\-]/g,""); if(!s) return ""; const x=s.replace(/,(?=\d{1,2}$)/,".").replace(/,/g,""); return x!==""&&isFinite(+x)?String(+x):""; };
 function impDate(v){ v=String(v||"").trim(); let m;
