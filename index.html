@@ -287,7 +287,7 @@ th.r,td.r{text-align:right}
 .pill{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
 .st-active{background:var(--s-active);color:var(--s-active-i)} .st-limit{background:var(--s-limit);color:var(--s-limit-i)}
 .st-block{background:var(--s-block);color:var(--s-block-i)} .st-verif{background:var(--s-verif);color:var(--s-verif-i)}
-.st-closed{background:var(--s-closed);color:var(--s-closed-i)} .st-done{background:#0F2640;color:#6FB8FF} .st-stolen{background:#3A1E0E;color:#FF9A52}
+.st-closed{background:var(--s-closed);color:var(--s-closed-i)} .st-done{background:#0F2640;color:#6FB8FF} .st-stolen{background:#3A1E0E;color:#FF9A52} .st-ready{background:#35123A;color:#F57CF2} .st-inwork{background:#0D2A2A;color:#3DDBD9}
 input[type=date]{color-scheme:dark}
 .days{display:block;font-size:11px;color:var(--muted);margin-top:3px}
 .best{color:var(--v1);font-weight:700}
@@ -450,6 +450,7 @@ textarea{resize:vertical;min-height:64px}
 
 <script>
 const STATUSES = {
+  ready:{t:"Готов к запуску",c:"st-ready",col:"#F57CF2"}, inwork:{t:"В работе",c:"st-inwork",col:"#3DDBD9"},
   active:{t:"Активен",c:"st-active",col:"#B6FF1A"}, limit:{t:"Порезан",c:"st-limit",col:"#FFC24D"},
   verif:{t:"Верификация",c:"st-verif",col:"#C79BFF"}, block:{t:"Блок",c:"st-block",col:"#FF6E88"}, done:{t:"Отыграно",c:"st-done",col:"#4DA3FF"}, closed:{t:"Закрыт",c:"st-closed",col:"#8A97B4"}, stolen:{t:"Украли",c:"st-stolen",col:"#FF8A3D"}
 };
@@ -1266,7 +1267,7 @@ function drawAccount(){
     if (name==="partner"){ recalc(); return; }
     if (name==="status"){ const e=$("dBody").querySelector("input[name=endDate]");
       if (FINAL.includes(v) && e && !e.value) e.value=today();
-      if (!FINAL.includes(v) && e && e.value && v==="active") e.value=""; }
+      if (!FINAL.includes(v) && e && e.value && ["active","ready","inwork"].includes(v)) e.value=""; }
     const setChip=(nm,val)=>{ const s=$("dBody").querySelector(`[data-chipset="${nm}"]`); if(!s) return;
       if(!s.querySelector(`.chip[data-v="${CSS.escape(val)}"]`)){ const b=document.createElement("button"); b.type="button"; b.className="chip"; b.dataset.v=val; b.textContent=val; s.querySelector(".chips").insertBefore(b,s.querySelector(".chip.add")); }
       s.querySelector("input[type=hidden]").value=val; s.querySelectorAll(".chip[data-v]").forEach(c=>c.classList.toggle("on",c.dataset.v===val)); };
@@ -1405,7 +1406,7 @@ const IMP_GUESS=[[/выигр|прибыл|profit|%/,""],[/card ?(n|num)|ном�
   [/депоз|deposit|^деп$/,"deposit"],[/вывод|выведен|withdraw/,"withdrawn"],[/расход|комисс|expense/,"expenses"],[/почт|mail/,"email"],[/парол|pass/,"accPassword"],
   [/телеф|phone|^тел|^номер$/,"phone"],[/фио|владел|owner|^имя|name/,"owner"],[/статус|status/,"status"],[/адрес|address/,"address"],
   [/описан|заметк|коммент|note/,"notes"],[/^n$|^№$|^#$|акк|назван|label/,"label"]];
-const IMP_STATUS=[[/актив|active|работ/,"active"],[/порез|limit|лимит/,"limit"],[/вериф|verif|kyc/,"verif"],[/блок|block|бан/,"block"],[/отыгр|done|готов/,"done"],[/закрыт|close/,"closed"],[/укра|stolen|краж/,"stolen"]];
+const IMP_STATUS=[[/готов к|запуск|ready/,"ready"],[/в работе|in ?work/,"inwork"],[/актив|active|работ/,"active"],[/порез|limit|лимит/,"limit"],[/вериф|verif|kyc/,"verif"],[/блок|block|бан/,"block"],[/отыгр|done|готов/,"done"],[/закрыт|close/,"closed"],[/укра|stolen|краж/,"stolen"]];
 const impGuess=h=>{ const s=String(h||"").toLowerCase().replace(/\(.*?\)/g,"").replace(/\s+/g," ").trim(); if(!s) return null; const g=IMP_GUESS.find(([re])=>re.test(s)); return g?g[1]:null; };
 const impNum=v=>{ const s=String(v||"").replace(/[\s ]/g,"").replace(/[^\d,.\-]/g,""); if(!s) return ""; const x=s.replace(/,(?=\d{1,2}$)/,".").replace(/,/g,""); return x!==""&&isFinite(+x)?String(+x):""; };
 function impDate(v){ v=String(v||"").trim(); let m;
