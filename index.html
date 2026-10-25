@@ -307,6 +307,8 @@ input[type=date]{color-scheme:dark}
 .dhead h2{margin:0;font-size:20px}
 .dbody{padding:16px 20px;overflow-y:auto;flex:1}
 .drawer.wide{width:min(980px,100%)}
+.feeedit{background:none;border:0;padding:0 0 0 8px;color:var(--muted);font:inherit;font-size:12px;text-decoration:underline;cursor:pointer}
+label.f[hidden]{display:none}
 .imp-map{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) minmax(130px,200px);gap:6px 12px;align-items:center;font-size:13px}
 .imp-map .h{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .imp-map .v{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -493,16 +495,60 @@ const stageLabel=k=>(BLOCK_STAGES.find(s=>s[0]===k)||[])[1]||"";
 function openBlockOf(a){ const ob=(a.blocks||[]).filter(b=>!b.resolved); if(ob.length) return ob[ob.length-1];
   return a.status==="block"?{reason:"Статус «Блок»",date:a.endDate||"",note:""}:null; }
 const isBlocked=a=>!!openBlockOf(a);
+/* ---------- прибыль и доля партнёра, зафиксированные на день вывода ----------
+   wdLog — история «срезов» аккаунта: {d:дата, net:сколько прибыли в валюте акка, rate:курс дня, pct:% партнёра, g:прибыль в $, fee:доля партнёра в $}.
+   Сумма net = max(0, Выведено − Депозит − Расходы): депозит — оборотка, в минус не уходим.
+   После записи суммы не меняются ни от курса, ни от процента в Настройках. */
+const r2=x=>Math.round(x*100)/100;
+const sumOf=(l,k)=>l.reduce((s,e)=>s+n(e[k]),0);
+const netOf=a=>n(a.withdrawn)-n(a.deposit)-n(a.expenses);
+const rateOf=cur=>cur==="USD"?1:n(S.settings.rates?.[cur]);
+const legacyDate=a=>a.endDate||a.startDate||"";
+function wdLogOf(a){ let l=a&&a.wdLog; if(typeof l==="string"&&l){ try{ l=JSON.parse(l); }catch(e){ l=null; } } return Array.isArray(l)?l:null; }
+// дописывает в историю разницу между текущей прибылью и уже записанной
+function bookLog(a,log,date){
+  const out=log.map(e=>({...e})), booked=sumOf(out,"net"), delta=Math.max(0,netOf(a))-booked;
+  if(Math.abs(delta)<0.005) return {log:out,ok:true};
+  let rate,pct,g,fee;
+  if(delta<0&&booked>0){   // прибыль уменьшили (исправили сумму) — откатываем по тем же курсу и доле
+    const G=sumOf(out,"g"), F=sumOf(out,"fee"); g=delta*G/booked; fee=G?g*F/G:0; rate=G?booked/G:0; pct=G?F/G*100:0;
+  } else { rate=rateOf(a.currency); if(!(rate>0)) return {log:out,ok:false}; pct=n(partnerOf(a).pct); g=delta/rate; fee=g*pct/100; }
+  out.push({d:date,net:r2(delta),rate:Math.round(rate*10000)/10000,pct:r2(pct),g:r2(g),fee:r2(fee)});
+  return {log:out,ok:true}; }
+// аккаунт без истории (заведён до обновления) — одной записью по сегодняшнему курсу на дату окончания/запуска
+function legacyLog(a){ const r=bookLog(a,[],legacyDate(a)); return r.ok?r.log:null; }
+// сменили партнёра у аккаунта — пересчитываем долю под его процент
+function repct(log,a){ const p=n(partnerOf(a).pct); return log.map(e=>({...e,pct:p,fee:r2(n(e.g)*p/100)})); }
 function calc(a){
-  const net = n(a.withdrawn) - n(a.deposit) - n(a.expenses);
-  const rate = n(S.settings.rates?.[a.currency]);
-  const pct = n(partnerOf(a).pct);
-  let fee = null;
-  if (net <= 0 || pct === 0) fee = 0;
-  else if (a.currency === "USD") fee = net * pct / 100;
-  else if (rate > 0) fee = net * pct / 100 / rate;
-  return { net, fee };
+  const net=netOf(a); let base=wdLogOf(a);
+  if(!base){ base=legacyLog(a); if(!base) return {net,fee:null,g:null,log:null}; }
+  else if(a.feePartner&&a.feePartner!==partnerOf(a).id) base=repct(base,a);
+  const r=bookLog(a,base,localToday());   // несохранённые изменения в форме — по сегодняшнему курсу
+  if(!r.ok) return {net,fee:null,g:null,log:null};
+  return {net,fee:r2(sumOf(r.log,"fee")),g:r2(sumOf(r.log,"g")),log:r.log};
 }
+// у владельца при входе: старым аккаунтам фиксируем долю по сегодняшнему курсу (один раз),
+// а если «Выведено» поменяли в старой версии сайта и история не записалась — дописываем её сегодняшним днём
+async function migrateFees(){
+  if(S._migr||!S.db||Store.me?.role!=="owner") return; S._migr=true;
+  const ops=[]; let legacy=0;
+  for(const a of S.accounts){ const saved=wdLogOf(a);
+    if(!saved){ const log=legacyLog(a); if(!log||!log.length) continue;
+      const fee=r2(sumOf(log,"fee")), paid=(a.feePaid===true||a.feePaid==="TRUE")?fee:0; legacy++;
+      ops.push({op:"update",path:"accounts/"+a.id,data:{wdLog:log,feePartner:partnerOf(a).id,feePaidAmt:paid,feePaid:paid>0}}); continue; }
+    let log=saved.map(e=>({...e})), changed=false;
+    if(legacyDate(a)&&log.some(e=>!e.d)){ log.forEach(e=>{ if(!e.d) e.d=legacyDate(a); }); changed=true; }
+    if(a.feePartner&&a.feePartner!==partnerOf(a).id){ log=repct(log,a); changed=true; }
+    const r=bookLog(a,log,localToday()); if(r.ok&&r.log.length!==log.length){ log=r.log; changed=true; }
+    if(changed) ops.push({op:"update",path:"accounts/"+a.id,data:{wdLog:log,feePartner:partnerOf(a).id}}); }
+  for(let i=0;i<ops.length;i+=10){ try{ await writeOps(ops.slice(i,i+10)); }catch(e){ S._migr=false; return; } }   // мелкими пачками — сервер не занят надолго
+  if(legacy) toast(`Доля партнёра зафиксирована по сегодняшнему курсу: ${legacy} акк.`);
+}
+// сколько партнёру всего, сколько уже отдали, сколько должны
+function feeState(a){ const {fee}=calc(a); if(fee===null) return {fee:null,paid:0,owe:0};
+  const has=a.feePaidAmt!==undefined&&a.feePaidAmt!=="";
+  const paid=Math.min(fee,Math.max(0,has?n(a.feePaidAmt):(a.feePaid===true||a.feePaid==="TRUE"?fee:0)));
+  return {fee,paid:r2(paid),owe:r2(Math.max(0,fee-paid))}; }
 function uniq(key){ return [...new Set(S.accounts.map(a=>a[key]).filter(Boolean))].sort((a,b)=>a.localeCompare(b)); }
 
 function fillSelect(sel, values, first){
@@ -519,7 +565,7 @@ function filtered(){
     if (b && a.bookmaker!==b) return false;
     if (c && a.country!==c) return false;
     if (st && a.status!==st) return false;
-    if (unpaid && (a.feePaid || !(calc(a).fee>0))) return false;
+    if (unpaid && !(feeState(a).owe>0)) return false;
     if (q){
       const hay=[a.label,a.bookmaker,a.email,a.owner,a.phone,a.card,a.country,a.notes,a.cardNumber].join(" ").toLowerCase();
       if (!hay.includes(q)) return false;
@@ -534,8 +580,8 @@ function renderStats(list){
   for (const a of list){
     if (a.status==="active") active++;
     if (isBlocked(a)) blocks++;
-    const {fee}=calc(a);
-    if (fee===null) missing.add(a.currency||"—"); else if (a.feePaid) paid+=fee; else owe+=fee;
+    const fs=feeState(a);
+    if (fs.fee===null) missing.add(a.currency||"—"); else { paid+=fs.paid; owe+=fs.owe; }
   }
   $("stats").innerHTML = `
     <div class="stat"><div class="k">Аккаунтов</div><div class="v num">${list.length}</div></div>
@@ -604,7 +650,7 @@ function allCards(){
 const inCard=(a,c)=>(a.bookmaker||"Без конторы")===c.bookmaker && (a.country||"")===(c.country||"");
 function renderHome(){
   const cards=allCards().map(c=>{ const accs=S.accounts.filter(a=>inCard(a,c));
-    let net=0,owe=0,cur=c.currency||"",curs=new Set(),netU=0,hasU=true; for(const a of accs){ const r=calc(a); net+=r.net; if(a.currency) curs.add(a.currency); if(r.fee>0&&!a.feePaid) owe+=r.fee; const u=toUSD(r.net,a.currency); if(u===null) hasU=false; else netU+=u; }
+    let net=0,owe=0,cur=c.currency||"",curs=new Set(),netU=0,hasU=true; for(const a of accs){ const r=calc(a); net+=r.net; if(a.currency) curs.add(a.currency); owe+=feeState(a).owe; const u=toUSD(r.net,a.currency); if(u===null) hasU=false; else netU+=u; }
     if(curs.size===1) cur=[...curs][0];
     return {c,stage:STAGES[c.stage]?c.stage:"active",accs,net,owe,cur,multi:curs.size>1,netU,hasU,active:accs.filter(a=>a.status==="active").length,blocks:accs.filter(a=>a.status==="block").length};
   }).sort((x,y)=>STAGE_ORDER[x.stage]-STAGE_ORDER[y.stage]
@@ -830,7 +876,7 @@ function watchWorker(id){
 async function initWork(){
   try{ W.owner=!!(await S.user?.isOwner()); }catch(e){}
   $("workTab").textContent=W.owner?"Работники":"Моя работа";
-  $("finTab").hidden=!W.owner; if(W.owner) initFin();
+  $("finTab").hidden=false; $("finTab").textContent=W.owner?"Финансы":"Расходы"; initFin();
   S.db.collection("pricelist").onSnapshot(s=>{ W.prices=s.docs.map(d=>({id:d.id,...d.data()})).sort((x,y)=>(x.createdAt||"").localeCompare(y.createdAt||"")); if(S.view==="work") renderWork(); },()=>{});
   if(W.owner){
     S.db.collection("work").onSnapshot(s=>{ s.docs.forEach(d=>watchWorker(d.id)); if(S.view==="work") renderWork(); },()=>{});
@@ -854,7 +900,7 @@ $("work").addEventListener("change",e=>{ const r=e.target.closest("[data-pid]");
 /* ---------- finance (owner only) ---------- */
 const FIN={entries:[], cats:null, month:null, unsub:[]};
 const FIN_DEF={income:["OTS","BETTING"], expense:["Прокси","Документы","Софт","Прочее"]};
-const FIN_PAY="Выплаты работникам";
+const FIN_PAY="Выплаты работникам", FIN_CARDS="Карточки";
 const MONTHS=["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
 function finCats(){ return FIN.cats||FIN_DEF; }
 function ymOf(d){ return String(d||"").slice(0,7); }
@@ -865,18 +911,25 @@ function finRows(){
   for(const [uid,w] of Object.entries(W.workers||{})) for(const p of (w.pays||[]))
     rows.push({id:"pay-"+p.id, auto:true, type:"expense", category:FIN_PAY, amount:n(p.amount), currency:"USD", usd:n(p.amount),
       date:String(p.date||"").slice(0,10), note:"", product:(typeof Store!=="undefined"&&Store.users?(Store.users.find(u=>u.id===uid)?.name||""):"")||"Работник"});
+  // прибыль с карточек — по дням, когда вписывали «Выведено», уже без доли партнёра
+  FIN.noDate=0;
+  for(const a of S.accounts){ const log=calc(a).log||[]; let nd=false;
+    log.forEach((e,i)=>{ const usd=r2(n(e.g)-n(e.fee)), d=e.d||legacyDate(a); if(Math.abs(usd)<0.005) return; if(!d){ nd=true; return; }
+      rows.push({id:"acc-"+a.id+"-"+i, auto:true, type:"income", category:FIN_CARDS, amount:usd, currency:"USD", usd, date:d,
+        product:a.label||"Аккаунт", note:[a.bookmaker,a.country].filter(Boolean).join(" · ")}); });
+    if(nd) FIN.noDate++; }
   return rows;
 }
 function finTotals(rows,ym){ const r=rows.filter(x=>ymOf(x.date)===ym); const t={income:0,expense:0,miss:0,byCat:{income:{},expense:{}}};
   for(const x of r){ if(x.usd===null){ t.miss++; continue; } t[x.type]+=x.usd; t.byCat[x.type][x.category]=(t.byCat[x.type][x.category]||0)+x.usd; } return {...t,rows:r}; }
 
 function renderFin(){
-  const el=$("fin"); if(!W.owner){ el.innerHTML=""; return; }
+  const el=$("fin"); if(!W.owner) return renderFinWorker(el);
   FIN.month ||= localToday().slice(0,7);
   const rows=finRows(), ym=FIN.month, t=finTotals(rows,ym), prev=finTotals(rows,shiftYm(ym,-1)), net=t.income-t.expense, pnet=prev.income-prev.expense;
   const delta=(a,b)=>{ if(!b) return ""; const d=a-b; return `<span class="${d<0?'neg':'pos'}">${d<0?"−":"+"}$${fmt(Math.abs(d))}</span> к прошлому`; };
   const catBox=(type,title)=>{ const m=t.byCat[type]; const tot=t[type]; const ks=Object.keys(m).sort((a,b)=>m[b]-m[a]);
-    return `<div class="box"><h3>${title} · $${fmt(tot)}</h3>${ks.length?ks.map(k=>`<div class="fcat"><div class="fl"><span>${esc(k)}${k===FIN_PAY?' <span class="muted" style="font-size:11px">авто</span>':""}</span><span class="num">$${fmt(m[k])} <span class="muted">${tot?Math.round(m[k]/tot*100):0}%</span></span></div><div class="hbar"><span style="width:${tot?m[k]/tot*100:0}%;background:${type==='income'?'var(--fin-in)':'var(--fin-out)'}"></span></div></div>`).join(""):'<div class="muted">Записей нет.</div>'}</div>`; };
+    return `<div class="box"><h3>${title} · $${fmt(tot)}</h3>${ks.length?ks.map(k=>`<div class="fcat"><div class="fl"><span>${esc(k)}${k===FIN_PAY||k===FIN_CARDS?' <span class="muted" style="font-size:11px">авто</span>':""}</span><span class="num">$${fmt(m[k])} <span class="muted">${tot?Math.round(m[k]/tot*100):0}%</span></span></div><div class="hbar"><span style="width:${tot?m[k]/tot*100:0}%;background:${type==='income'?'var(--fin-in)':'var(--fin-out)'}"></span></div></div>`).join(""):'<div class="muted">Записей нет.</div>'}</div>`; };
   // 6-month chart
   const months=[...Array(6)].map((_,i)=>shiftYm(ym,i-5)); const tots=months.map(m=>finTotals(rows,m));
   const max=Math.max(1,...tots.map(x=>Math.max(x.income,x.expense)));
@@ -896,6 +949,7 @@ function renderFin(){
       <div class="stat"><div class="k">Маржа</div><div class="v num">${t.income?Math.round(net/t.income*100)+"%":"—"}</div><div class="k">доля прихода, что осталась</div></div>
     </div>
     ${t.miss?`<div class="notice">${t.miss} записей в валюте без курса — не вошли в суммы.</div>`:""}
+    ${FIN.noDate?`<div class="notice">${FIN.noDate} акк. с прибылью без даты запуска или окончания — их прибыль не вошла в приход. Укажите дату в аккаунте.</div>`:""}
     <div class="box" style="margin-bottom:12px"><h3>Последние 6 месяцев</h3>${chart}</div>
     <div class="an-grid" style="margin-top:0">${catBox("income","Приход по категориям")}${catBox("expense","Расходы по категориям")}</div>
     ${(()=>{ const g={}; t.rows.filter(x=>x.usd!==null).forEach(x=>{ const k=x.type+"|"+(x.product||"Без описания")+"|"+x.category; const o=g[k] ||= {type:x.type,p:x.product||"Без описания",c:x.category,s:0,n:0}; o.s+=x.usd; o.n++; });
@@ -903,13 +957,13 @@ function renderFin(){
       const box=(tp,title)=>{ const l=top(tp); return `<div class="box"><h3>${title}</h3>${l.length?`<table><tbody>${l.map(o=>`<tr><td>${esc(o.p)}<div class="muted" style="font-size:11px">${esc(o.c)}</div></td><td class="r muted num">${o.n}×</td><td class="r num">$${fmt(o.s)}</td></tr>`).join("")}</tbody></table>`:'<div class="muted">Пусто.</div>'}</div>`; };
       return `<div class="an-grid" style="margin-top:12px">${box("income","Что продали — топ")}${box("expense","На что потратили — топ")}</div>`; })()}
     <div class="box" style="margin-top:12px"><h3>Записи за ${ymLabel(ym).toLowerCase()}</h3>
-      ${list.length?list.map(x=>`<div class="went"><span class="ftag ${x.type}">${x.type==="income"?"Приход":"Расход"}</span><div class="wt"><b>${esc(x.product||x.category)}</b>${x.product?` <span class="muted" style="font-size:12px">${esc(x.category)}</span>`:""}<div class="wn">${new Date((x.date||localToday())+"T12:00:00").toLocaleDateString("ru-RU")}${x.note?" · "+esc(x.note):""}${x.auto?" · из выплат":""}</div></div>
-        <span class="num ${x.type==='income'?'pos':''}">${x.type==="income"?"+":"−"}${fmt(n(x.amount),n(x.amount)%1?2:0)} ${esc(x.currency||"USD")}</span>
+      ${list.length?list.map(x=>`<div class="went"><span class="ftag ${x.type}">${x.type==="income"?"Приход":"Расход"}</span><div class="wt"><b>${esc(x.product||x.category)}</b>${x.product?` <span class="muted" style="font-size:12px">${esc(x.category)}</span>`:""}<div class="wn">${new Date((x.date||localToday())+"T12:00:00").toLocaleDateString("ru-RU")}${x.note?" · "+esc(x.note):""}${x.auto?(x.category===FIN_CARDS?" · с карточек":" · из выплат"):""}${(()=>{ const nm=x.createdBy&&x.createdBy!==S.uid?Store.users.find(u=>u.id===x.createdBy)?.name:""; return nm?" · "+esc(nm):""; })()}</div></div>
+        <span class="num ${x.type==='income'&&n(x.amount)>=0?'pos':''}">${(x.type==="income")===(n(x.amount)>=0)?"+":"−"}${fmt(Math.abs(n(x.amount)),n(x.amount)%1?2:0)} ${esc(x.currency||"USD")}</span>
         ${x.auto?'<span style="width:22px"></span>':`<button class="tdel" data-fdel="${esc(x.id)}" aria-label="Удалить запись" title="Удалить">×</button>`}</div>`).join(""):'<div class="muted">В этом месяце записей нет. Добавьте приход или расход кнопками сверху.</div>'}</div>
     <div class="box" style="margin-top:12px"><h3>Категории</h3>
       ${["income","expense"].map(tp=>`<div class="fcats"><div class="k" style="font-size:12px;color:var(--muted);margin-bottom:6px">${tp==="income"?"Приход":"Расходы"}</div><div class="chips">
         ${finCats()[tp].map(c=>`<span class="chip">${esc(c)} <button class="chipx" data-fcdel="${tp}|${esc(c)}" aria-label="Удалить категорию ${esc(c)}">×</button></span>`).join("")}
-        ${tp==="expense"?`<span class="chip" style="opacity:.6" title="Считается само из выплат во вкладке «Работники»">${FIN_PAY} · авто</span>`:""}
+        ${tp==="expense"?`<span class="chip" style="opacity:.6" title="Считается само из выплат во вкладке «Работники»">${FIN_PAY} · авто</span>`:`<span class="chip" style="opacity:.6" title="Считается само из «Выведено» в аккаунтах, без доли партнёра">${FIN_CARDS} · авто</span>`}
         <input class="chipnew" data-fcadd="${tp}" placeholder="+ категория, Enter"></div></div>`).join("")}
       <div class="hint">Удаление категории не трогает уже сделанные записи.</div></div>`;
 }
@@ -918,14 +972,14 @@ function openFinForm(type){
   S.editing=null; $("dTitle").textContent=type==="income"?"Новый приход":"Новый расход";
   const cats=finCats()[type];
   $("dBody").innerHTML=`<div class="grid">
-    ${chipField("fcat","Категория",cats[0]||"",cats,{full:true,noNew:true})}
+    ${chipField("fcat","Категория",cats[0]||"",cats,W.owner?{full:true,noEdit:true,newLabel:"+ Категория"}:{full:true,noNew:true})}
     <label class="f full">Продукт / услуга — что продали или сделали<input name="fproduct" list="dlFinProd" placeholder="${type==="income"?"Например: аккаунт Betano CZ":"Например: 10 прокси DE"}" autocomplete="off"></label>
     <div class="chips full" id="fProdChips" style="margin-top:-4px"></div>
     <label class="f">Сумма<input name="famount" inputmode="decimal" placeholder="0"></label>
     <label class="f">Дата<input type="date" name="fdate" value="${localToday()}"></label>
     ${chipField("fcur","Валюта","USD",mergeU(["USD"],CURRENCIES),{full:true,noNew:true})}
     <label class="f full">Комментарий<input name="fnote" placeholder="Необязательно"></label></div>
-    ${cats.length?"":'<div class="notice">Сначала добавьте категорию внизу вкладки «Финансы».</div>'}`;
+    ${cats.length?"":`<div class="notice">${W.owner?"Категорий пока нет — нажмите «+ Категория».":"Категорий пока нет — попросите владельца добавить."}</div>`}`;
   const prodChips=cat=>{ const cnt={}; FIN.entries.filter(e=>e.type===type&&e.category===cat&&e.product).forEach(e=>cnt[e.product]=(cnt[e.product]||0)+1);
     const top=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]).slice(0,8);
     $("fProdChips").innerHTML=top.map(p=>`<button type="button" class="chip" data-fprod="${esc(p)}">${esc(p)}</button>`).join("");
@@ -939,11 +993,32 @@ function openFinForm(type){
   $("dCancel").onclick=closeDrawer;
   $("dSave").onclick=async()=>{ const f=$("dBody"); const v=k=>f.querySelector(`[name=${k}]`).value.trim();
     const amount=n(v("famount")); if(!(amount>0)){ toast("Укажите сумму."); return; } if(!v("fcat")){ toast("Выберите категорию."); return; }
-    try{ await S.db.collection("fin").doc().set({type,category:v("fcat"),product:v("fproduct"),amount,currency:v("fcur")||"USD",date:v("fdate")||localToday(),note:v("fnote"),createdAt:new Date().toISOString()});
+    try{ await S.db.collection("fin").doc().set({type,category:v("fcat"),product:v("fproduct"),amount,currency:v("fcur")||"USD",date:v("fdate")||localToday(),note:v("fnote"),createdBy:S.uid||"",createdAt:new Date().toISOString()});
+      if(W.owner){ const cs=finCats(), cat=v("fcat"); if(!cs[type].includes(cat)) saveCats({...cs,[type]:[...cs[type],cat]}); }   // новая категория из формы — в общий список
       FIN.month=ymOf(v("fdate")||localToday()); closeDrawer(); toast("Записано"); }
     catch(e){ toast(e?.message||"Не сохранилось."); } };
   openDrawer(); setTimeout(()=>f_focus(),50);
   function f_focus(){ const i=$("dBody").querySelector("[name=famount]"); i&&i.focus(); }
+}
+// вкладка «Расходы» для работника: только расходы (сервер не отдаёт ему приход и зарплаты)
+function renderFinWorker(el){
+  FIN.month ||= localToday().slice(0,7); const ym=FIN.month;
+  const rows=FIN.entries.filter(e=>e.type==="expense").map(e=>({...e,usd:e.currency==="USD"||!e.currency?n(e.amount):toUSD(n(e.amount),e.currency)}));
+  const list=rows.filter(x=>ymOf(x.date)===ym).sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.createdAt||"").localeCompare(a.createdAt||""));
+  const tot=list.reduce((s,x)=>s+(x.usd||0),0), mine=list.filter(x=>x.createdBy===S.uid).reduce((s,x)=>s+(x.usd||0),0);
+  const who=id=>id===S.uid?"вы":(Store.users.find(u=>u.id===id)?.name||"");
+  el.innerHTML=`
+    <div class="fhead"><button class="btn" data-fm="-1" aria-label="Предыдущий месяц">‹</button><div class="fmonth">${ymLabel(ym)}</div><button class="btn" data-fm="1" aria-label="Следующий месяц">›</button>
+      <div class="actions" style="margin-left:auto"><button class="btn primary" data-fadd="expense">+ Расход</button></div></div>
+    <div class="wtop">
+      <div class="stat"><div class="k">Расходы за месяц</div><div class="v num">$${fmt(tot)}</div><div class="k">${list.length} ${(k=>k%10===1&&k%100!==11?"запись":k%10>=2&&k%10<=4&&(k%100<12||k%100>14)?"записи":"записей")(list.length)}</div></div>
+      <div class="stat"><div class="k">Внесли вы</div><div class="v num">$${fmt(mine)}</div></div></div>
+    <div class="box" style="margin-top:12px"><h3>Расходы за ${ymLabel(ym).toLowerCase()}</h3>
+      ${list.length?list.map(x=>`<div class="went"><span class="ftag expense">Расход</span><div class="wt"><b>${esc(x.product||x.category)}</b>${x.product?` <span class="muted" style="font-size:12px">${esc(x.category)}</span>`:""}
+        <div class="wn">${new Date((x.date||localToday())+"T12:00:00").toLocaleDateString("ru-RU")}${x.note?" · "+esc(x.note):""}${x.createdBy?" · "+esc(who(x.createdBy)):""}</div></div>
+        <span class="num">−${fmt(n(x.amount),n(x.amount)%1?2:0)} ${esc(x.currency||"USD")}</span>
+        ${x.createdBy===S.uid?`<button class="tdel" data-fdel="${esc(x.id)}" aria-label="Удалить запись" title="Удалить">×</button>`:'<span style="width:22px"></span>'}</div>`).join("")
+        :'<div class="muted">В этом месяце расходов нет. Добавьте кнопкой «+ Расход».</div>'}</div>`;
 }
 function initFin(){
   if(FIN.unsub.length) return;
@@ -960,7 +1035,7 @@ $("fin").addEventListener("click",async e=>{
 });
 $("fin").addEventListener("keydown",e=>{ const i=e.target.closest("[data-fcadd]"); if(!i||e.key!=="Enter") return; e.preventDefault();
   const v=i.value.trim(); if(!v) return; const c2=structuredClone(finCats()); const tp=i.dataset.fcadd;
-  if(c2[tp].some(x=>x.toLowerCase()===v.toLowerCase())||v===FIN_PAY){ toast("Такая категория уже есть."); return; } c2[tp].push(v); saveCats(c2); });
+  if(c2[tp].some(x=>x.toLowerCase()===v.toLowerCase())||v===FIN_PAY||v===FIN_CARDS){ toast("Такая категория уже есть."); return; } c2[tp].push(v); saveCats(c2); });
 (function(){ let tip; const el=$("fin");
   el.addEventListener("pointerover",e=>{ const c=e.target.closest("[data-tip]"); if(!c) return; tip ||= Object.assign(document.createElement("div"),{className:"ftip"}); document.body.appendChild(tip);
     tip.textContent=c.dataset.tip; const r=c.getBoundingClientRect(); tip.style.left=Math.min(window.innerWidth-tip.offsetWidth-8,Math.max(8,r.left+r.width/2-tip.offsetWidth/2))+"px"; tip.style.top=(r.top-tip.offsetHeight-8+scrollY)+"px"; });
@@ -1003,15 +1078,15 @@ function renderAnalytics(){
   let owe=0,paid=0,oweN=0,paidN=0,noRate=0,netUSD=0,depUSD=0,wdUSD=0;
   const unpaid=[], openBlocks=[], byBook={}, byCountry={}, byPartner={};
   for(const a of A){
-    const {net,fee}=calc(a); const cur=a.currency;
+    const {net}=calc(a); const fs=feeState(a), fee=fs.fee; const cur=a.currency;
     const nU=toUSD(net,cur), dU=toUSD(n(a.deposit),cur), wU=toUSD(n(a.withdrawn),cur);
     if(nU!==null){ netUSD+=nU; depUSD+=dU; wdUSD+=wU; } else if(a.deposit||a.withdrawn) noRate++;
-    if(fee>0){ if(a.feePaid){paid+=fee;paidN++;} else {owe+=fee;oweN++;unpaid.push([a,fee]);} }
-    { const pr=partnerOf(a); const g=byPartner[pr.id] ||= {p:pr,n:0,owe:0,paid:0,net:0}; g.n++; if(nU!==null) g.net+=nU; if(fee>0){ if(a.feePaid) g.paid+=fee; else g.owe+=fee; } }
+    if(fs.paid>0){ paid+=fs.paid; paidN++; } if(fs.owe>0){ owe+=fs.owe; oweN++; unpaid.push([a,fs.owe]); }
+    { const pr=partnerOf(a); const g=byPartner[pr.id] ||= {p:pr,n:0,owe:0,paid:0,net:0}; g.n++; if(nU!==null) g.net+=nU; g.paid+=fs.paid; g.owe+=fs.owe; }
     const ob=openBlockOf(a); if(ob) openBlocks.push([a,ob]);
     const kb=a.bookmaker||"Без конторы", kc=a.country||"Без страны";
     for(const [m,k] of [[byBook,kb],[byCountry,kc]]){
-      const g=m[k]||={n:0,net:0,owe:0,block:0,active:0}; g.n++; if(nU!==null) g.net+=nU; if(fee>0&&!a.feePaid) g.owe+=fee;
+      const g=m[k]||={n:0,net:0,owe:0,block:0,active:0}; g.n++; if(nU!==null) g.net+=nU; g.owe+=fs.owe;
       if(a.status==="block") g.block++; if(a.status==="active") g.active++;
     }
   }
@@ -1061,10 +1136,10 @@ function render(){
   renderStats(list); renderMoney(list);
 
   $("rows").innerHTML = list.map(a=>{
-    const {net,fee}=calc(a); const st=STATUSES[a.status]||STATUSES.active; const cur=esc(a.currency||"");
+    const {net}=calc(a); const fs=feeState(a), fee=fs.fee, done=fs.owe<=0; const st=STATUSES[a.status]||STATUSES.active; const cur=esc(a.currency||"");
     const feeCell = fee===null?`<span class="muted">нет курса</span>`
       : fee===0?`<span class="muted">—</span>`
-      : `<span class="num">${fmt(fee)}</span><span class="dot ${a.feePaid?'paid':'unpaid'}" title="${a.feePaid?'Оплачено':'Не оплачено'}"></span><span class="days">${esc(partnerOf(a).name)} · ${fmt(n(partnerOf(a).pct),0)}%</span>`;
+      : `<span class="num">${fmt(fee)}</span><span class="dot ${done?'paid':'unpaid'}" title="${done?'Оплачено':fs.paid>0?'Не оплачено $'+fmt(fs.owe,2):'Не оплачено'}"></span><span class="days">${esc(partnerOf(a).name)} · ${fmt(n(partnerOf(a).pct),0)}%</span>`;
     return `<tr tabindex="0" data-id="${esc(a.id)}">
       <td class="acc"><b>${esc(a.label||"Без номера")}</b>${S.card?"":`<span>${flag(a.country)?`<span class="flag">${flag(a.country)}</span> `:""}${esc([a.bookmaker,a.country].filter(Boolean).join(" · "))}</span>`}</td>
       <td>${esc(a.owner||"")}</td>
@@ -1112,7 +1187,7 @@ function chipField(name,label,val,options,o={}){
     <input type="hidden" name="${name}" value="${esc(val||"")}">
     <div class="chips">${opts.map(v=>{const [k,t]=Array.isArray(v)?v:[v,v];
       return `<button type="button" class="chip ${k===val?'on':''}" data-v="${esc(k)}">${o.flags&&flag(t)?flag(t)+' ':''}${esc(t)}</button>`}).join("")}
-    ${o.noNew?'':'<button type="button" class="chip add" data-new="1">+ Другое</button><button type="button" class="chip add" data-edit="1">Править</button>'}</div></div>`;
+    ${o.noNew?'':`<button type="button" class="chip add" data-new="1">${esc(o.newLabel||"+ Другое")}</button>`+(o.noEdit?'':'<button type="button" class="chip add" data-edit="1">Править</button>')}</div></div>`;
 }
 function wireChips(onPick){
   $("dBody").querySelectorAll("[data-chipset]").forEach(set=>{
@@ -1129,10 +1204,11 @@ function wireChips(onPick){
       if (c.dataset.new){
         const inp=document.createElement("input"); inp.className="chipnew"; inp.placeholder="Введите и Enter";
         c.replaceWith(inp); inp.focus();
-        const done=()=>{ const v=inp.value.trim(); if(!v){ inp.replaceWith(c); return; }
+        let fin=false;   // Enter/Esc убирают поле, браузер следом шлёт blur — второй раз не обрабатываем
+        const done=()=>{ if(fin) return; fin=true; const v=inp.value.trim(); if(!v){ inp.replaceWith(c); return; }
           const b=document.createElement("button"); b.type="button"; b.className="chip"; b.dataset.v=v;
           b.textContent=(name==="country"&&flag(v)?flag(v)+" ":"")+v; inp.replaceWith(b); set.querySelector(".chips").insertBefore(c,set.querySelector("[data-edit]")); unhideOption(name,v); pick(v); };
-        inp.addEventListener("keydown",ev=>{ if(ev.key==="Enter"){ev.preventDefault();done();} if(ev.key==="Escape"){inp.replaceWith(c);} });
+        inp.addEventListener("keydown",ev=>{ if(ev.key==="Enter"){ev.preventDefault();done();} if(ev.key==="Escape"){ fin=true; inp.replaceWith(c); } });
         inp.addEventListener("blur",done);
         return;
       }
@@ -1171,6 +1247,7 @@ function openAccount(id){
     id = null;
   }
   a.blocks ||= [];
+  if(id){ const fs=feeState(a); a.feePaid=fs.fee>0&&fs.owe<=0; }
   S.editing=a; a._curManual=!!id || !!(S.card&&a.currency); S.editingCard=false;
   $("dTitle").textContent = id ? (a.label||"Аккаунт") : "Новый аккаунт";
   drawAccount();
@@ -1183,6 +1260,17 @@ function readForm(){
   const a=S.editing;
   $("dBody").querySelectorAll("[name]").forEach(el=>{ a[el.name]= el.type==="checkbox"?el.checked:el.value.trim(); });
 }
+// блок «Деньги» в карточке аккаунта
+function feeBox(a){ const r=calc(a), fs=feeState(a), p=partnerOf(a), cur=esc(a.currency||"");
+  return `<div>Чистая прибыль</div><div class="num">${fmt(r.net)} ${cur}</div>`+(p.id==="none"?"":
+    `<div>${esc(p.name)} (${fmt(n(p.pct),0)}%)<button type="button" class="feeedit" id="feeEdit">исправить</button></div><div class="num">${r.fee===null?"нет курса "+cur:"$"+fmt(r.fee,2)}</div>`+
+    (fs.paid>0&&fs.owe>0?`<div class="muted">Уже отдали</div><div class="num muted">$${fmt(fs.paid,2)}</div><div>Осталось отдать</div><div class="num">$${fmt(fs.owe,2)}</div>`:"")); }
+// история выводов: по какому курсу и сколько партнёру зафиксировано
+function wdHist(a){ const saved=wdLogOf(a), log=calc(a).log||[]; if(!log.length) return "";
+  const cur=esc(a.currency||""), dt=d=>(d=d||legacyDate(a))?new Date(d+"T12:00:00").toLocaleDateString("ru-RU"):"без даты";
+  return "Зафиксировано:<br>"+log.map((e,i)=>{ const fresh=!saved||i>=saved.length;
+    const what=n(e.net)?`${n(e.net)>0?"+":"−"}${fmt(Math.abs(n(e.net)))} ${cur}${n(e.rate)&&cur!=="USD"?" по курсу "+String(e.rate).replace(".",","):""}`:"поправка вручную";
+    return `${dt(e.d)} · ${what} · партнёру $${fmt(n(e.fee),2)}${fresh?' <span class="pos">— запишется при сохранении</span>':""}`; }).join("<br>"); }
 function drawAccount(){
   const a=S.editing; const {net,fee}=calc(a);
   const statusOpts=Object.entries(STATUSES).map(([k,v])=>[k,v.t]);
@@ -1222,10 +1310,9 @@ function drawAccount(){
     </div>
     <div class="grid" style="margin-top:11px">${chipField("partner","Партнёр (чей бот)",partnerOf(a).id,partnerChips(),{full:true,noNew:true})}</div>
     ${partnerOf(a).terms?`<div class="hint" id="pTerms">Условия: ${esc(partnerOf(a).terms)}</div>`:'<div id="pTerms"></div>'}
-    <div class="calc" id="calcBox">
-      <div>Чистая прибыль</div><div class="num">${fmt(net)} ${esc(a.currency||"")}</div>
-      <div>${esc(partnerOf(a).name)} (${fmt(n(partnerOf(a).pct),0)}%)</div><div class="num">${fee===null?"нет курса "+esc(a.currency||""):"$"+fmt(fee)}</div>
-    </div>
+    <div class="calc" id="calcBox">${feeBox(a)}</div>
+    <label class="f" id="feeFixRow" style="margin-top:10px" ${a._feeTouched?"":"hidden"}>Сколько партнёру, $ — например, как в старой таблице<input name="feeFix" inputmode="decimal" autocomplete="off" value="${esc(a.feeFix||"")}"></label>
+    <div class="hint" id="wdHist">${wdHist(a)}</div>
     <label class="check" id="feePaidRow" style="margin-top:11px" ${partnerOf(a).id==="none"?"hidden":""}><input type="checkbox" name="feePaid" ${a.feePaid?"checked":""}> Оплачено партнёру</label>
 
     <div class="sec">Блокировки и проверки</div>
@@ -1257,12 +1344,14 @@ function drawAccount(){
     <div class="sec">Заметки</div>
     ${field("notes","",a.notes,{type:"textarea",full:true})}`;
 
-  const recalc=()=>{ readForm(); const r=calc(S.editing);
-      $("calcBox").innerHTML=`<div>Чистая прибыль</div><div class="num">${fmt(r.net)} ${esc(S.editing.currency||"")}</div>
-      <div>${esc(partnerOf(S.editing).name)} (${fmt(n(partnerOf(S.editing).pct),0)}%)</div><div class="num">${r.fee===null?"нет курса "+esc(S.editing.currency||""):"$"+fmt(r.fee)}</div>`;
+  const recalc=()=>{ readForm(); $("calcBox").innerHTML=feeBox(S.editing); $("wdHist").innerHTML=wdHist(S.editing);
     const pt=$("pTerms"); if(pt){ const t=partnerOf(S.editing).terms; pt.className=t?"hint":""; pt.textContent=t?"Условия: "+t:""; }
     const fp=$("feePaidRow"); if(fp) fp.hidden=partnerOf(S.editing).id==="none"; };
   $("dBody").querySelectorAll("input[name=deposit],input[name=withdrawn],input[name=expenses]").forEach(el=>el.addEventListener("input",recalc));
+  // «исправить» — ручная сумма партнёру (например, из старой таблицы)
+  $("calcBox").onclick=e=>{ if(e.target.id!=="feeEdit") return; const row=$("feeFixRow"), i=row.querySelector("input"); row.hidden=false;
+    if(!a._feeTouched){ const f=calc(S.editing).fee; i.value=f===null?"":String(f); } i.focus(); i.select(); };
+  $("dBody").querySelector("input[name=feeFix]").addEventListener("input",()=>{ a._feeTouched=true; });
   wireChips((name,v)=>{
     if (name==="partner"){ recalc(); return; }
     if (name==="status"){ const e=$("dBody").querySelector("input[name=endDate]");
@@ -1308,6 +1397,19 @@ async function saveAccount(){
   { const prev=a.id?S.accounts.find(x=>x.id===a.id):null;
     if(doc.status==="block" && !doc.blocks.some(b=>!b.resolved)) doc.blocks.push({reason:"Блок аккаунта",date:doc.endDate||localToday(),note:"",resolved:false});
     if(prev&&prev.status==="block"&&doc.status!=="block") doc.blocks.forEach(b=>{ if(!b.resolved) b.resolved=true; }); } doc.partner=a.partner||partnerOf(a).id;
+  // прибыль и долю партнёра фиксируем по сегодняшнему курсу; уже записанное не меняется
+  { const prev=a.id?S.accounts.find(x=>x.id===a.id):null;
+    let base=prev?(wdLogOf(prev)||legacyLog(prev)||[]):[];
+    if(prev&&(prev.feePartner||partnerOf(prev).id)!==doc.partner) base=repct(base,doc);   // сменили партнёра у аккаунта
+    if(legacyDate(doc)) base=base.map(e=>e.d?e:{...e,d:legacyDate(doc)});   // старой прибыли без даты — дата аккаунта
+    const log=bookLog(doc,base,localToday()).log;
+    if(a._feeTouched&&String(a.feeFix||"").trim()!==""){   // ручная поправка суммы партнёру
+      const diff=r2(n(a.feeFix)-sumOf(log,"fee"));
+      if(Math.abs(diff)>=0.01){ if(log.length) log[log.length-1].fee=r2(n(log[log.length-1].fee)+diff); else log.push({d:localToday(),net:0,rate:0,pct:0,g:0,fee:diff}); } }
+    doc.wdLog=log; doc.feePartner=doc.partner;
+    const fee=r2(sumOf(log,"fee")), was=prev?feeState(prev):{fee:0,paid:0,owe:0}, wasPaid=was.fee>0&&was.owe<=0;
+    let paid=was.paid; if(!!a.feePaid!==wasPaid) paid=a.feePaid?fee:0;   // галочку не трогали — оплаченное остаётся как было
+    doc.feePaidAmt=r2(Math.max(0,Math.min(paid,fee))); doc.feePaid=fee>0&&doc.feePaidAmt>=fee-0.005; }
   doc.updatedAt=new Date().toISOString(); doc.updatedBy=S.uid||"";
   const btn=$("dSave"); btn.disabled=true; btn.textContent="Сохраняю…";
   try{
@@ -1399,9 +1501,9 @@ render();
 const IMP_FIELDS=[["","— не переносить"],["label","Номер / название"],["owner","Владелец (ФИО)"],["email","Почта"],["accPassword","Пароль"],["phone","Телефон"],
   ["birthDate","Дата рождения"],["status","Статус"],["startDate","Запуск (дата)"],["deposit","Депозит"],["withdrawn","Выведено"],["expenses","Расходы"],
   ["method","Способ депозита"],["cardHolder","Держатель карты"],["cardNumber","Номер карты"],["cardExp","Срок карты"],["cardCvv","CVV"],
-  ["notes","Заметки"],["address","Адрес → в заметки"]];
+  ["notes","Заметки"],["address","Адрес → в заметки"],["feeFix","Партнёру, $ (как в таблице)"]];
 // угадываем поле по заголовку; порядок важен — сначала точные. "" = столбец считается сам (выигрыш, %), не переносим
-const IMP_GUESS=[[/выигр|прибыл|profit|%/,""],[/card ?(n|num)|номер карт/,"cardNumber"],[/cvv|cvc/,"cardCvv"],[/держател|holder/,"cardHolder"],
+const IMP_GUESS=[[/выигр|прибыл|profit/,""],[/%|партн/,"feeFix"],[/card ?(n|num)|номер карт/,"cardNumber"],[/cvv|cvc/,"cardCvv"],[/держател|holder/,"cardHolder"],
   [/^date$|срок|exp/,"cardExp"],[/банк|bank|метка/,"method"],[/способ|method/,"method"],[/рожд|birth|^др$/,"birthDate"],[/запуск|старт|start/,"startDate"],
   [/депоз|deposit|^деп$/,"deposit"],[/вывод|выведен|withdraw/,"withdrawn"],[/расход|комисс|expense/,"expenses"],[/почт|mail/,"email"],[/парол|pass/,"accPassword"],
   [/телеф|phone|^тел|^номер$/,"phone"],[/фио|владел|owner|^имя|name/,"owner"],[/статус|status/,"status"],[/адрес|address/,"address"],
@@ -1431,13 +1533,14 @@ function impBuild(st,base){
   return st.rows.map(r=>{
     const d={startDate:"",endDate:"",label:"",status:"",bookmaker:base.bookmaker,country:base.country,owner:"",phone:"",email:"",accPassword:"",birthDate:"",card:"",method:"",
       cardHolder:"",cardNumber:"",cardExp:"",cardCvv:"",currency:base.currency,deposit:"",withdrawn:"",expenses:"",notes:""};
-    const warn=[], notes=[], addr=[];
+    const warn=[], notes=[], addr=[]; let feeFix="";
     st.map.forEach((f,i)=>{ const v=(r[i]||"").trim(); if(!f||!v) return;
       if(f==="deposit"||f==="withdrawn"||f==="expenses"){ const x=impNum(v); if(x==="") warn.push(`не число «${v}»`); else d[f]=x; }
       else if(f==="birthDate"||f==="startDate"){ const x=impDate(v); if(x) d[f]=x; else warn.push(`дата «${v}» не понята`); }
       else if(f==="status"){ const s=IMP_STATUS.find(([re])=>re.test(v.toLowerCase())); if(s) d.status=s[1]; else warn.push(`статус «${v}» не понят`); }
       else if(f==="cardNumber"){ if(/e\+/i.test(v)) warn.push("номер карты испорчен в таблице (E+) — впишите вручную"); else d.cardNumber=v; }
       else if(f==="notes") notes.push(v); else if(f==="address") addr.push("Адрес: "+v);
+      else if(f==="feeFix"){ const x=impNum(v); if(x==="") warn.push(`сумма партнёру «${v}» не понята`); else feeFix=x; }
       else d[f]=v; });
     d.notes=[...notes,...addr].join("\n");
     if(!d.status) d.status=base.status;
@@ -1447,6 +1550,11 @@ function impBuild(st,base){
     const doc={...d,currency:(d.currency||"").toUpperCase(),feePaid:!!base.feePaid,
       blocks:d.status==="block"?[{reason:"Блок аккаунта",date:localToday(),note:"",resolved:false}]:[],
       partner:base.partner,updatedAt:now,updatedBy:S.uid||""};   // те же поля, что сохраняет форма аккаунта
+    // прибыль старого аккаунта фиксируем на его дату (если дат нет — в Финансы не попадёт), долю — по сегодняшнему курсу или из таблицы
+    const log=bookLog(doc,[],legacyDate(doc)).log;
+    if(feeFix!==""&&log.length){ const diff=r2(n(feeFix)-sumOf(log,"fee")); log[log.length-1].fee=r2(n(log[log.length-1].fee)+diff); }
+    const fee=r2(sumOf(log,"fee"));
+    Object.assign(doc,{wdLog:log,feePartner:base.partner,feePaidAmt:base.feePaid?fee:0,feePaid:!!base.feePaid&&fee>0});
     return {doc,warn,skip};
   }); }
 
@@ -1646,6 +1754,7 @@ $("work").addEventListener("click",async e=>{
   db.collection("cards").onSnapshot(s=>{ S.cards=s.docs.map(d=>({id:d.id,...d.data()}));
     if(S.card){ const f=S.cards.find(c=>ckey(c.bookmaker,c.country)===ckey(S.card.bookmaker,S.card.country)); if(f) S.card=f; } render(); });
   db.collection("accounts").onSnapshot(s=>{ S.accounts=s.docs.map(d=>({id:d.id,...d.data()})); render(); });
+  if(Store.me.role==="owner") setTimeout(migrateFees,1500);
   const tick=()=>{ if(document.visibilityState==="visible" && !$("drawer").classList.contains("open") && Date.now()-lastSync>20000) syncNow().catch(()=>{}); };
   setInterval(tick,5000); document.addEventListener("visibilitychange",tick);
 })();
