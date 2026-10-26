@@ -170,6 +170,7 @@ input[type=time]{color-scheme:dark}
 .ptag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;white-space:nowrap}
 .ptag.paid{background:var(--s-active);color:var(--s-active-i)}
 .ptag.unpaid{background:var(--s-block);color:var(--s-block-i)}
+.ptag.custom{background:#2E2410;color:#FFC24D}
 .wcard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:15px 16px;margin-bottom:12px}
 .wcard .wh{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .wcard .wname{font-size:18px;font-weight:700;flex:1}
@@ -297,6 +298,14 @@ input[type=date]{color-scheme:dark}
 .pos{color:var(--pos)} .neg{color:var(--neg)} .muted{color:var(--muted)}
 .empty{padding:44px 20px;text-align:center;color:var(--muted)}
 .notice{background:var(--s-limit);color:var(--s-limit-i);border-radius:12px;padding:11px 15px;margin-bottom:12px;font-size:14px}
+.notice .ndbtn{background:none;border:0;padding:0 0 0 6px;font:inherit;color:inherit;font-weight:600;text-decoration:underline;cursor:pointer}
+.ndlist{margin-top:10px;display:flex;flex-direction:column;gap:4px}
+.ndrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) auto;gap:10px;align-items:center;text-align:left;background:rgba(0,0,0,.25);border:1px solid transparent;border-radius:9px;padding:8px 11px;color:var(--ink);font:inherit;font-size:13px;cursor:pointer}
+.ndrow:hover{border-color:var(--s-limit-i)}
+.ndrow>*{justify-self:start;text-align:left;max-width:100%}
+.ndrow span{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ndrow .num{color:var(--ink);justify-self:end}
+.ndhint{font-size:12px;opacity:.85;margin-top:4px}
 
 .scrim{position:fixed;inset:0;background:rgba(4,6,12,.6);backdrop-filter:blur(2px);display:none;z-index:10}
 .scrim.open{display:block}
@@ -652,7 +661,7 @@ function renderHome(){
   const cards=allCards().map(c=>{ const accs=S.accounts.filter(a=>inCard(a,c));
     let net=0,owe=0,cur=c.currency||"",curs=new Set(),netU=0,hasU=true; for(const a of accs){ const r=calc(a); net+=r.net; if(a.currency) curs.add(a.currency); owe+=feeState(a).owe; const u=toUSD(r.net,a.currency); if(u===null) hasU=false; else netU+=u; }
     if(curs.size===1) cur=[...curs][0];
-    return {c,stage:STAGES[c.stage]?c.stage:"active",accs,net,owe,cur,multi:curs.size>1,netU,hasU,active:accs.filter(a=>a.status==="active").length,blocks:accs.filter(a=>a.status==="block").length};
+    return {c,stage:STAGES[c.stage]?c.stage:"active",accs,net,owe,cur,multi:curs.size>1,netU,hasU,active:accs.filter(a=>a.status==="active").length,inwork:accs.filter(a=>a.status==="inwork").length,blocks:accs.filter(a=>a.status==="block").length};
   }).sort((x,y)=>STAGE_ORDER[x.stage]-STAGE_ORDER[y.stage]
     || (y.accs.length>0)-(x.accs.length>0)
     || y.netU-x.netU
@@ -665,7 +674,7 @@ function renderHome(){
       <div class="bname"><span class="bflag">${flag(x.c.country)||"🏳️"}</span>${esc(x.c.bookmaker)}</div>
       <div class="bcountry">${esc(x.c.country||"Страна не указана")}${x.cur&&!x.multi?" · "+esc(x.cur):""}</div>
       <div class="bnet num ${ (x.multi?x.netU:x.net)<0?'neg':(x.accs.length?'pos':'muted')}">${x.accs.length?(x.multi?(x.hasU?"$"+fmt(x.netU):"—"):fmt(x.net)+" "+esc(x.cur)):"Пусто"}</div>
-      <div class="bmeta"><span>${x.accs.length} акк.</span><span>${x.active} активных</span>${x.blocks?`<span class="neg">${x.blocks} в блоке</span>`:""}${x.owe>0?`<span>Партнёрам $${fmt(x.owe)}<span class="dot unpaid"></span></span>`:""}</div>
+      <div class="bmeta"><span>${x.accs.length} акк.</span><span>${x.inwork} в работе</span>${x.active?`<span>${x.active} активных</span>`:""}${x.blocks?`<span class="neg">${x.blocks} в блоке</span>`:""}${x.owe>0?`<span>Партнёрам $${fmt(x.owe)}<span class="dot unpaid"></span></span>`:""}</div>
       <div class="stages">${Object.entries(STAGES).map(([k,s])=>`<button type="button" class="stg ${k===x.stage?'on':''}" data-stage="${k}" data-ck="${esc(ckey(x.c.bookmaker,x.c.country))}">${s}</button>`).join("")}</div>
     </div>`).join("")+`<button class="bcard add" id="addCard"><div class="plus">+</div>Новая карточка</button>`;
   const st={active:0,testing:0,soon:0}; cards.forEach(x=>st[x.stage]++);
@@ -791,7 +800,8 @@ function sumE(list){ return list.reduce((x,e)=>x+n(e.price)*(n(e.qty)||1),0); }
 function weekStart(){ const d=new Date(); d.setDate(d.getDate()-((d.getDay()+6)%7)); return dstr(d); }
 function stats(entries,pays){ const paidIds=payIndex(pays); const unpaid=entries.filter(e=>!paidIds.has(e.id));
   return {unpaid, unpaidSum:sumE(unpaid), paidSum:pays.reduce((x,p)=>x+n(p.amount),0), today:sumE(entries.filter(e=>e.date===localToday())), week:sumE(entries.filter(e=>e.date>=weekStart())), paidIds}; }
-function entryRow(e,paid,canDel){ return `<div class="went"><div class="wt"><b>${esc(e.title)}</b>${n(e.qty)>1?` × ${n(e.qty)}`:""}
+function entryRow(e,paid,canDel){ const own=W.owner&&(e.custom===true||e.custom==="TRUE");
+  return `<div class="went"><div class="wt"><b>${esc(e.title)}</b>${n(e.qty)>1?` × ${n(e.qty)}`:""}${own?` <span class="ptag custom" title="Название или цена не из прайса — проверьте">своя цена${(()=>{ const p=W.prices.find(x=>x.id===e.priceId); return p&&n(p.price)!==n(e.price)?" · в прайсе "+money(n(p.price)):""; })()}</span>`:""}
   <div class="wn">${[e.accountLabel,e.note].filter(Boolean).map(esc).join(" · ")}</div></div>
   <span class="num">${money(n(e.price)*(n(e.qty)||1))}</span><span class="ptag ${paid?'paid':'unpaid'}">${paid?'оплачено':'к выплате'}</span>
   ${canDel&&!paid?`<button class="tdel" data-wdel="${esc(e.id)}" aria-label="Удалить" title="Удалить">×</button>`:""}</div>`; }
@@ -803,6 +813,8 @@ function renderWork(){
   const el=$("work");
   if(!S.db||!S.uid){ el.innerHTML='<div class="box empty">Раздел работает в опубликованной странице после входа.</div>'; return; }
   if(W.owner) return renderOwnerWork(el);
+  // фоновая синхронизация перерисовывает вкладку — не теряем то, что работник уже начал вписывать
+  const keep=["wTitle","wPrice","wQty","wDate","wAcc","wNote"].map(id=>[id,$(id)?.value]).filter(x=>x[1]!==undefined), foc=document.activeElement?.id;
   const st=stats(W.my,W.myPay);
   el.innerHTML=`
     <div class="wtop">
@@ -812,29 +824,45 @@ function renderWork(){
       <div class="stat"><div class="k">Эта неделя</div><div class="v num">${money(st.week)}</div></div>
     </div>
     <div class="box">
-      <h3 style="margin:0 0 8px">Что сделал — нажми на задачу</h3>
-      ${W.prices.length?`<div class="plist">${W.prices.map(p=>`<button class="pbtn" data-price="${esc(p.id)}"><b>${esc(p.name)}</b><span>${money(n(p.price))}</span></button>`).join("")}</div>`:'<div class="muted">Прайс пока пустой — его заполняет владелец.</div>'}
+      <h3 style="margin:0 0 8px">Что сделал</h3>
+      ${W.prices.length?`<div class="hint" style="margin:0 0 6px">Быстрый выбор из прайса — подставит название и цену, их можно поправить:</div>
+        <div class="plist">${W.prices.map(p=>`<button class="pbtn" data-price="${esc(p.id)}"><b>${esc(p.name)}</b><span>${money(n(p.price))}</span></button>`).join("")}</div>`:""}
       <div class="wform">
-        <input type="date" id="wDate" value="${localToday()}">
+        <input id="wTitle" class="grow" list="dlWorkTitles" placeholder="Что сделал, например: регистрация аккаунта" autocomplete="off">
+        <input id="wPrice" inputmode="decimal" placeholder="Цена, $" style="width:100px" aria-label="Цена, $">
         <input id="wQty" type="number" min="1" value="1" style="width:80px" aria-label="Количество">
+        <input type="date" id="wDate" value="${localToday()}">
         <input id="wAcc" list="dlAcc" placeholder="Аккаунт (необязательно)">
         <input id="wNote" class="grow" placeholder="Комментарий (необязательно)">
+        <button class="btn primary" id="wAdd">Записать</button>
       </div>
-      <div class="hint">Выбери дату, количество и аккаунт, потом нажми на задачу из прайса — она сразу запишется.</div>
+      <datalist id="dlWorkTitles">${[...new Set([...W.prices.map(p=>p.name),...W.my.map(e=>e.title)].filter(Boolean))].map(t=>`<option value="${esc(t)}">`).join("")}</datalist>
+      <div class="hint">Напиши, что сделал, и поставь цену в $ — или нажми задачу из прайса. Потом «Записать».</div>
     </div>
     ${W.my.length?byDays(W.my,st.paidIds,true):'<div class="box empty" style="margin-top:14px">Записей пока нет.</div>'}
     ${W.myPay.length?`<div class="wday"><h3><span>Выплаты</span></h3>${[...W.myPay].sort((x,y)=>(y.date||"").localeCompare(x.date||"")).map(p=>`<div class="went"><div class="wt"><b>${esc(new Date(p.date).toLocaleDateString("ru-RU"))}</b><div class="wn">${esc(p.note||"")}</div></div><span class="num pos">${money(n(p.amount))}</span></div>`).join("")}</div>`:""}`;
+  keep.forEach(([id,v])=>{ const x=$(id); if(x) x.value=v; }); if(foc&&$(foc)) $(foc).focus();
 }
-async function addEntry(priceId){
-  const p=W.prices.find(x=>x.id===priceId); if(!p) return;
+// работник сам пишет, что сделал, и ставит цену; прайс — только подсказка
+async function addEntry(){
+  const title=$("wTitle").value.trim(), price=n($("wPrice").value);
+  if(!title){ $("wTitle").focus(); toast("Напишите, что сделали."); return; }
+  if(!(price>0)){ $("wPrice").focus(); toast("Укажите цену в $."); return; }
   const accTxt=$("wAcc").value.trim(); const acc=accByLabel(accTxt); if(accTxt&&!acc){ toast("Аккаунт не найден — выберите из списка."); return; }
   const qty=Math.max(1,Math.round(n($("wQty").value)||1));
+  const p=W.prices.find(x=>x.name===title);   // совпало с прайсом — привяжем, владелец увидит, если цена другая
+  const btn=$("wAdd"); btn.disabled=true;
   try{
-    await S.db.collection(`work/${S.uid}/entries`).doc().set({date:$("wDate").value||localToday(),priceId:p.id,title:p.name,price:n(p.price),qty,
+    await S.db.collection(`work/${S.uid}/entries`).doc().set({date:$("wDate").value||localToday(),priceId:p?p.id:"",title,price:r2(price),qty,
       note:$("wNote").value.trim(),accountId:acc?.id||"",accountLabel:acc?(acc.label||""):"",createdAt:new Date().toISOString()});
-    $("wNote").value=""; $("wQty").value="1"; toast(`Записано: ${p.name}`);
+    ["wTitle","wPrice","wNote"].forEach(id=>$(id).value=""); $("wQty").value="1"; toast(`Записано: ${title}`);
   }catch(e){ toast(e?.message||"Не сохранилось, попробуйте ещё раз."); }
+  finally{ if($("wAdd")) $("wAdd").disabled=false; }
 }
+// подставляем цену: из прайса или ту, что ставил в прошлый раз за такую же задачу
+function fillWorkPrice(){ const t=$("wTitle").value.trim(), pr=$("wPrice"); if(!t||pr.value.trim()) return;
+  const p=W.prices.find(x=>x.name===t); if(p){ pr.value=n(p.price); return; }
+  const last=[...W.my].filter(e=>e.title===t).sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""))[0]; if(last) pr.value=n(last.price); }
 async function delEntry(id){ if(!(await ask("Удалить запись?"))) return;
   try{ await S.db.doc(`work/${S.uid}/entries/${id}`).delete(); }catch(e){ toast("Не удалилось."); } }
 
@@ -858,7 +886,7 @@ function renderOwnerWork(el){
     <div class="box" style="margin-top:16px"><h3 style="margin:0 0 10px">Прайс задач</h3>
       <div id="prices">${W.prices.map(p=>`<div class="prow" data-pid="${esc(p.id)}"><input value="${esc(p.name)}" data-f="name" aria-label="Название"><input value="${esc(p.price)}" data-f="price" inputmode="decimal" aria-label="Цена, $"><button class="tdel" data-pdel="${esc(p.id)}" aria-label="Удалить">×</button></div>`).join("")}</div>
       <div class="prow"><input id="pName" placeholder="Например: регистрация аккаунта"><input id="pPrice" inputmode="decimal" placeholder="Цена, $"><button class="btn" id="pAdd" style="padding:6px">+</button></div>
-      <div class="hint">Цена в $. Изменение цены не меняет уже сделанные записи.</div></div>${usersBox()}`;
+      <div class="hint">Цена в $. Изменение цены не меняет уже сделанные записи. Работники могут написать свою задачу и цену — такие записи помечены «своя цена».</div></div>${usersBox()}`;
   resolveNames();
 }
 async function payWorker(id){
@@ -886,7 +914,8 @@ async function initWork(){
   }
 }
 $("work").addEventListener("click",async e=>{
-  const p=e.target.closest("[data-price]"); if(p) return addEntry(p.dataset.price);
+  const p=e.target.closest("[data-price]"); if(p){ const x=W.prices.find(y=>y.id===p.dataset.price); if(x){ $("wTitle").value=x.name; $("wPrice").value=n(x.price); $("wPrice").focus(); } return; }
+  if(e.target.id==="wAdd") return addEntry();
   const d=e.target.closest("[data-wdel]"); if(d) return delEntry(d.dataset.wdel);
   const o=e.target.closest("[data-wopen]"); if(o){ W.open[o.dataset.wopen]=!W.open[o.dataset.wopen]; return renderWork(); }
   const y=e.target.closest("[data-wpay]"); if(y) return payWorker(y.dataset.wpay);
@@ -894,6 +923,8 @@ $("work").addEventListener("click",async e=>{
   if(e.target.id==="pAdd"){ const nm=$("pName").value.trim(), pr=n($("pPrice").value); if(!nm||!(pr>0)){ toast("Укажите название и цену."); return; }
     try{ await S.db.collection("pricelist").doc().set({name:nm,price:pr,createdAt:new Date().toISOString()}); }catch(_){ toast("Не сохранилось."); } }
 });
+$("work").addEventListener("keydown",e=>{ if(e.key==="Enter"&&e.target.closest(".wform")&&!W.owner){ e.preventDefault(); addEntry(); } });
+$("work").addEventListener("input",e=>{ if(e.target.id==="wTitle") fillWorkPrice(); });
 $("work").addEventListener("change",e=>{ const r=e.target.closest("[data-pid]"); if(!r||!e.target.dataset.f) return;
   const f=e.target.dataset.f, v=f==="price"?n(e.target.value):e.target.value.trim(); if(f==="price"&&!(v>0)) return;
   S.db.doc(`pricelist/${r.dataset.pid}`).update({[f]:v}).catch(()=>toast("Не сохранилось.")); });
@@ -912,12 +943,12 @@ function finRows(){
     rows.push({id:"pay-"+p.id, auto:true, type:"expense", category:FIN_PAY, amount:n(p.amount), currency:"USD", usd:n(p.amount),
       date:String(p.date||"").slice(0,10), note:"", product:(typeof Store!=="undefined"&&Store.users?(Store.users.find(u=>u.id===uid)?.name||""):"")||"Работник"});
   // прибыль с карточек — по дням, когда вписывали «Выведено», уже без доли партнёра
-  FIN.noDate=0;
+  FIN.noDate=[];
   for(const a of S.accounts){ const log=calc(a).log||[]; let nd=false;
     log.forEach((e,i)=>{ const usd=r2(n(e.g)-n(e.fee)), d=e.d||legacyDate(a); if(Math.abs(usd)<0.005) return; if(!d){ nd=true; return; }
       rows.push({id:"acc-"+a.id+"-"+i, auto:true, type:"income", category:FIN_CARDS, amount:usd, currency:"USD", usd, date:d,
         product:a.label||"Аккаунт", note:[a.bookmaker,a.country].filter(Boolean).join(" · ")}); });
-    if(nd) FIN.noDate++; }
+    if(nd) FIN.noDate.push([a,r2(log.filter(e=>!(e.d||legacyDate(a))).reduce((s,e)=>s+n(e.g)-n(e.fee),0))]); }
   return rows;
 }
 function finTotals(rows,ym){ const r=rows.filter(x=>ymOf(x.date)===ym); const t={income:0,expense:0,miss:0,byCat:{income:{},expense:{}}};
@@ -949,7 +980,11 @@ function renderFin(){
       <div class="stat"><div class="k">Маржа</div><div class="v num">${t.income?Math.round(net/t.income*100)+"%":"—"}</div><div class="k">доля прихода, что осталась</div></div>
     </div>
     ${t.miss?`<div class="notice">${t.miss} записей в валюте без курса — не вошли в суммы.</div>`:""}
-    ${FIN.noDate?`<div class="notice">${FIN.noDate} акк. с прибылью без даты запуска или окончания — их прибыль не вошла в приход. Укажите дату в аккаунте.</div>`:""}
+    ${FIN.noDate.length?`<div class="notice nodate">${FIN.noDate.length} акк. с прибылью без даты запуска или окончания — их прибыль не вошла в приход.
+      <button class="ndbtn" data-nodate>${FIN.showNoDate?"Скрыть":"Показать, какие"}</button>
+      ${FIN.showNoDate?`<div class="ndlist">${[...FIN.noDate].sort((x,y)=>y[1]-x[1]).map(([a,usd])=>`<button class="ndrow" data-oacc="${esc(a.id)}"><b>${esc(a.label||"Без номера")}</b>
+        <span>${esc([a.bookmaker,a.country].filter(Boolean).join(" · "))}</span><span class="num">$${fmt(usd)}</span></button>`).join("")}
+        <div class="ndhint">Нажмите на аккаунт, поставьте дату «Запуск» и сохраните — он уйдёт из этого списка.</div></div>`:""}</div>`:""}
     <div class="box" style="margin-bottom:12px"><h3>Последние 6 месяцев</h3>${chart}</div>
     <div class="an-grid" style="margin-top:0">${catBox("income","Приход по категориям")}${catBox("expense","Расходы по категориям")}</div>
     ${(()=>{ const g={}; t.rows.filter(x=>x.usd!==null).forEach(x=>{ const k=x.type+"|"+(x.product||"Без описания")+"|"+x.category; const o=g[k] ||= {type:x.type,p:x.product||"Без описания",c:x.category,s:0,n:0}; o.s+=x.usd; o.n++; });
@@ -1026,6 +1061,8 @@ function initFin(){
   FIN.unsub.push(S.db.doc("fincat/main").onSnapshot(s=>{ FIN.cats=s.exists?{income:[...(s.data().income||[])],expense:[...(s.data().expense||[])]}:null; if(S.view==="fin") renderFin(); },()=>{}));
 }
 $("fin").addEventListener("click",async e=>{
+  if(e.target.closest("[data-nodate]")){ FIN.showNoDate=!FIN.showNoDate; return renderFin(); }
+  const oa=e.target.closest("[data-oacc]"); if(oa) return openAccount(oa.dataset.oacc);
   const m=e.target.closest("[data-fm]"); if(m){ FIN.month=shiftYm(FIN.month,+m.dataset.fm); return renderFin(); }
   const c=e.target.closest("[data-ym]"); if(c){ FIN.month=c.dataset.ym; return renderFin(); }
   const a=e.target.closest("[data-fadd]"); if(a) return openFinForm(a.dataset.fadd);
@@ -1120,6 +1157,7 @@ function render(){
   $("dlAcc").innerHTML=S.accounts.map(a=>`<option value="${esc((flag(a.country)?flag(a.country)+" ":"")+(a.label||""))}">${esc([a.bookmaker,a.country,a.owner].filter(Boolean).join(" · "))}</option>`).join("");
   updateTaskBadge(); if(S.view==="tasks") renderTasks();
   if (S.view==="home"||!S.view){ renderHome(); }
+  if (S.view==="fin") renderFin();   // поправили аккаунт прямо из Финансов — суммы и список обновляются сразу
   if (S.card){ const c=S.card; const cnt=S.accounts.filter(a=>inCard(a,c)).length;
     $("detTitle").innerHTML=`<span class="bflag">${flag(c.country)||"🏳️"}</span><div>${esc(c.bookmaker)}<small>${esc(c.country||"")}${c.currency?" · "+esc(c.currency):""} · ${cnt} акк.</small></div>`;
     }
