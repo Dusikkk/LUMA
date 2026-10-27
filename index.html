@@ -576,7 +576,7 @@ function filtered(){
     if (st && a.status!==st) return false;
     if (unpaid && !(feeState(a).owe>0)) return false;
     if (q){
-      const hay=[a.label,a.bookmaker,a.email,a.owner,a.phone,a.card,a.country,a.notes,a.cardNumber].join(" ").toLowerCase();
+      const hay=[a.label,a.bookmaker,a.email,a.login,a.owner,a.phone,a.card,a.country,a.notes,a.cardNumber].join(" ").toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -1179,7 +1179,7 @@ function render(){
       : fee===0?`<span class="muted">—</span>`
       : `<span class="num">${fmt(fee)}</span><span class="dot ${done?'paid':'unpaid'}" title="${done?'Оплачено':fs.paid>0?'Не оплачено $'+fmt(fs.owe,2):'Не оплачено'}"></span><span class="days">${esc(partnerOf(a).name)} · ${fmt(n(partnerOf(a).pct),0)}%</span>`;
     return `<tr tabindex="0" data-id="${esc(a.id)}">
-      <td class="acc"><b>${esc(a.label||"Без номера")}</b>${S.card?"":`<span>${flag(a.country)?`<span class="flag">${flag(a.country)}</span> `:""}${esc([a.bookmaker,a.country].filter(Boolean).join(" · "))}</span>`}</td>
+      <td class="acc"><b>${esc(a.label||"Без номера")}</b>${a.login?`<span>${esc(a.login)}</span>`:""}${S.card?"":`<span>${flag(a.country)?`<span class="flag">${flag(a.country)}</span> `:""}${esc([a.bookmaker,a.country].filter(Boolean).join(" · "))}</span>`}</td>
       <td>${esc(a.owner||"")}</td>
       <td><span class="pill ${st.c}">${st.t}</span>${daysOf(a)!==null?`<span class="days">${a.endDate?"за ":""}${daysOf(a)} дн.${a.endDate?"":" в работе"}</span>`:""}</td>
       <td class="r num">${(a.deposit!==""&&a.deposit!=null)?fmt(n(a.deposit))+" "+cur:""}</td>
@@ -1298,6 +1298,8 @@ function readForm(){
   const a=S.editing;
   $("dBody").querySelectorAll("[name]").forEach(el=>{ a[el.name]= el.type==="checkbox"?el.checked:el.value.trim(); });
 }
+// в этой конторе (контора + страна) уже кто-то входит по логину — показываем поле сразу
+function loginCard(a){ const c={bookmaker:a.bookmaker||"Без конторы",country:a.country||""}; return S.accounts.some(x=>x.id!==a.id&&x.login&&inCard(x,c)); }
 // блок «Деньги» в карточке аккаунта
 function feeBox(a){ const r=calc(a), fs=feeState(a), p=partnerOf(a), cur=esc(a.currency||"");
   return `<div>Чистая прибыль</div><div class="num">${fmt(r.net)} ${cur}</div>`+(p.id==="none"?"":
@@ -1323,6 +1325,9 @@ function drawAccount(){
       <label class="f">Запуск<input type="date" name="startDate" value="${esc(a.startDate||"")}"></label>
       <label class="f">Завершён (отыграно / блок)<input type="date" name="endDate" value="${esc(a.endDate||"")}"></label>
       ${field("email","Почта",a.email,{full:true})}
+      ${a.login||a._showLogin||loginCard(a)?`<label class="f full" id="loginRow">Логин (юзернейм) — если вход не по почте<span class="pwf"><input name="login" value="${esc(a.login||"")}" autocomplete="off" data-lpignore="true" data-1p-ignore spellcheck="false">
+        <button type="button" class="pwb" data-copy="login" title="Скопировать" aria-label="Скопировать логин">⧉</button></span></label>`
+        :`<div class="full"><button type="button" class="feeedit" id="addLogin" style="padding:0">+ логин (если вход не по почте)</button></div>`}
       <label class="f">Пароль от аккаунта<span class="pwf"><input type="password" name="accPassword" value="${esc(a.accPassword||"")}" autocomplete="off" data-lpignore="true" data-1p-ignore spellcheck="false">
         <button type="button" class="pwb" data-pwshow title="Показать" aria-label="Показать пароль">👁</button><button type="button" class="pwb" data-pwcopy title="Скопировать" aria-label="Скопировать пароль">⧉</button></span></label>
       <label class="f">Дата рождения<input type="date" name="birthDate" value="${esc(a.birthDate||"")}" min="1920-01-01" max="${localToday()}"></label>
@@ -1406,12 +1411,16 @@ function drawAccount(){
       const cur=learned||COUNTRY_CUR[(ctry||"").toLowerCase()]; if(cur) setChip("currency",cur);
     }
     if (name==="bookmaker" && v){ const lab=$("dBody").querySelector("input[name=label]"); if(lab && (!lab.value.trim() || /\s\d+$/.test(lab.value) && !S.editing.id)) lab.value=nextLabel(v); }
+    if ((name==="bookmaker"||name==="country") && !$("loginRow")){ readForm(); if(loginCard(S.editing)){ drawAccount(); return; } }
     recalc();
   });
   if ($("atAdd")) $("atAdd").onclick=async()=>{ const t=$("atText").value.trim(); if(!t){ $("atText").focus(); return; }
     if(await addTask(t,$("atDate").value,$("atTime").value,a.id,$("atWho")?.value)){ $("atText").value=""; toast("Задача добавлена"); } };
   const pwI=$("dBody").querySelector("[name=accPassword]");
   $("dBody").querySelector("[data-pwshow]").onclick=e=>{ const sh=pwI.type==="password"; pwI.type=sh?"text":"password"; e.currentTarget.classList.toggle("on",sh); };
+  $("dBody").querySelectorAll("[data-copy]").forEach(b=>b.onclick=async()=>{ const i=$("dBody").querySelector(`[name=${b.dataset.copy}]`); if(!i||!i.value) return;
+    try{ await navigator.clipboard.writeText(i.value); toast("Логин скопирован"); }catch(_){ i.select(); toast("Выделено — нажмите Ctrl+C"); } });
+  if($("addLogin")) $("addLogin").onclick=()=>{ readForm(); a._showLogin=true; drawAccount(); $("dBody").querySelector("input[name=login]")?.focus(); };
   $("dBody").querySelector("[data-pwcopy]").onclick=async()=>{ if(!pwI.value) return; try{ await navigator.clipboard.writeText(pwI.value); toast("Пароль скопирован"); }catch(_){ pwI.type="text"; pwI.select(); toast("Выделено — нажмите Ctrl+C"); } };
   $("bQuick").onclick=e=>{ const c=e.target.closest("[data-breason]"); if(!c) return; $("dBody").querySelector("[name=_bReason]").value=c.dataset.breason;
     $("bQuick").querySelectorAll(".chip").forEach(x=>x.classList.toggle("on",x===c)); };
@@ -1429,7 +1438,7 @@ async function saveAccount(){
   if(a._bReason){ a.blocks=[...(a.blocks||[]),{reason:a._bReason,date:a._bDate||localToday(),note:a._bNote||"",stage:a._bStage||"",resolved:false}];
     ["_bReason","_bNote","_bStage"].forEach(k=>{ const el=$("dBody").querySelector(`[name=${k}]`); if(el) el.value=""; }); a._bReason=a._bNote=a._bStage=""; }
   const pendingTask=$("atText")?.value.trim();   // то же для задачи без «Добавить задачу»
-  for (const k of ["startDate","endDate","label","status","bookmaker","country","owner","phone","email","accPassword","birthDate","card","method","cardHolder","cardNumber","cardExp","cardCvv","currency","deposit","withdrawn","expenses","notes"]) doc[k]=a[k]??"";
+  for (const k of ["startDate","endDate","label","status","bookmaker","country","owner","phone","email","accPassword","login","birthDate","card","method","cardHolder","cardNumber","cardExp","cardCvv","currency","deposit","withdrawn","expenses","notes"]) doc[k]=a[k]??"";
   doc.currency=(doc.currency||"").toUpperCase();
   doc.feePaid=!!a.feePaid; doc.blocks=structuredClone(a.blocks||[]);
   { const prev=a.id?S.accounts.find(x=>x.id===a.id):null;
@@ -1536,14 +1545,14 @@ S.view="home";
 render();
 
 /* ================= импорт из Google Таблицы ================= */
-const IMP_FIELDS=[["","— не переносить"],["label","Номер / название"],["owner","Владелец (ФИО)"],["email","Почта"],["accPassword","Пароль"],["phone","Телефон"],
+const IMP_FIELDS=[["","— не переносить"],["label","Номер / название"],["owner","Владелец (ФИО)"],["email","Почта"],["accPassword","Пароль"],["login","Логин (юзернейм)"],["phone","Телефон"],
   ["birthDate","Дата рождения"],["status","Статус"],["startDate","Запуск (дата)"],["deposit","Депозит"],["withdrawn","Выведено"],["expenses","Расходы"],
   ["method","Способ депозита"],["cardHolder","Держатель карты"],["cardNumber","Номер карты"],["cardExp","Срок карты"],["cardCvv","CVV"],
   ["notes","Заметки"],["address","Адрес → в заметки"],["feeFix","Партнёру, $ (как в таблице)"]];
 // угадываем поле по заголовку; порядок важен — сначала точные. "" = столбец считается сам (выигрыш, %), не переносим
 const IMP_GUESS=[[/выигр|прибыл|profit/,""],[/%|партн/,"feeFix"],[/card ?(n|num)|номер карт/,"cardNumber"],[/cvv|cvc/,"cardCvv"],[/держател|holder/,"cardHolder"],
   [/^date$|срок|exp/,"cardExp"],[/банк|bank|метка/,"method"],[/способ|method/,"method"],[/рожд|birth|^др$/,"birthDate"],[/запуск|старт|start/,"startDate"],
-  [/депоз|deposit|^деп$/,"deposit"],[/вывод|выведен|withdraw/,"withdrawn"],[/расход|комисс|expense/,"expenses"],[/почт|mail/,"email"],[/парол|pass/,"accPassword"],
+  [/депоз|deposit|^деп$/,"deposit"],[/вывод|выведен|withdraw/,"withdrawn"],[/расход|комисс|expense/,"expenses"],[/логин|username|user ?name|юзер/,"login"],[/почт|mail/,"email"],[/парол|pass/,"accPassword"],
   [/телеф|phone|^тел|^номер$/,"phone"],[/фио|владел|owner|^имя|name/,"owner"],[/статус|status/,"status"],[/адрес|address/,"address"],
   [/описан|заметк|коммент|note/,"notes"],[/^n$|^№$|^#$|акк|назван|label/,"label"]];
 const IMP_STATUS=[[/готов к|запуск|ready/,"ready"],[/в работе|in ?work/,"inwork"],[/актив|active|работ/,"active"],[/порез|limit|лимит/,"limit"],[/вериф|verif|kyc/,"verif"],[/блок|block|бан/,"block"],[/отыгр|done|готов/,"done"],[/закрыт|close/,"closed"],[/укра|stolen|краж/,"stolen"]];
@@ -1569,7 +1578,7 @@ function impBuild(st,base){
   const have=new Set(S.accounts.filter(a=>inCard(a,{bookmaker:base.bookmaker,country:base.country})).map(a=>(a.label||"").trim().toLowerCase()).filter(Boolean));
   const seen=new Set(), now=new Date().toISOString();
   return st.rows.map(r=>{
-    const d={startDate:"",endDate:"",label:"",status:"",bookmaker:base.bookmaker,country:base.country,owner:"",phone:"",email:"",accPassword:"",birthDate:"",card:"",method:"",
+    const d={startDate:"",endDate:"",label:"",status:"",bookmaker:base.bookmaker,country:base.country,owner:"",phone:"",email:"",accPassword:"",login:"",birthDate:"",card:"",method:"",
       cardHolder:"",cardNumber:"",cardExp:"",cardCvv:"",currency:base.currency,deposit:"",withdrawn:"",expenses:"",notes:""};
     const warn=[], notes=[], addr=[]; let feeFix="";
     st.map.forEach((f,i)=>{ const v=(r[i]||"").trim(); if(!f||!v) return;
