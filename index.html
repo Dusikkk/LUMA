@@ -745,6 +745,10 @@ S.tasks=[];
 function dstr(d){ const z=new Date(d); z.setMinutes(z.getMinutes()-z.getTimezoneOffset()); return z.toISOString().slice(0,10); }
 function localToday(){ return dstr(new Date()); }
 function addDays(k){ const d=new Date(); d.setDate(d.getDate()+k); return dstr(d); }
+// кнопки срока для задачи: «Без срока» первой и выбрана по умолчанию
+function dueChips(){ return [["Без срока",""],["Сегодня",0],["Завтра",1],["+3 дня",3],["+7 дней",7]].map(([t,k])=>`<button type="button" class="chip ${k===""?"on":""}" data-add="${k}">${t}</button>`).join(""); }
+function pickDue(q,inp,c){ inp.value=c.dataset.add===""?"":addDays(+c.dataset.add); q.querySelectorAll(".chip").forEach(x=>x.classList.toggle("on",x===c)); }
+function syncDue(q,inp){ q.querySelectorAll(".chip").forEach(x=>x.classList.toggle("on",!inp.value&&x.dataset.add==="")); }
 function taskBucket(t){ if(t.done) return "done"; if(!t.due) return "nodate"; const td=localToday();
   if(t.due<td) return "over"; if(t.due===td) return (t.time && t.time < new Date().toTimeString().slice(0,5)) ? "over" : "today";
   if(t.due===addDays(1)) return "tomorrow"; return "later"; }
@@ -762,7 +766,7 @@ function taskItem(t,noAcc){ const b=taskBucket(t);
     <button class="tdel" data-tdel="${esc(t.id)}" aria-label="Удалить задачу" title="Удалить">×</button></div>`; }
 function renderTasks(){
   { const w=$("tWho"); const v=w.value; w.hidden=!team().length; w.innerHTML=whoOptions(v); }
-  const groups={over:["Просрочено",[]],today:["Сегодня",[]],tomorrow:["Завтра",[]],later:["Позже",[]],nodate:["Без срока",[]],done:["Выполнено",[]]};
+  const groups={over:["Просрочено",[]],today:["Сегодня",[]],nodate:["Без срока — пока не выполнят",[]],tomorrow:["Завтра",[]],later:["Позже",[]],done:["Выполнено",[]]};
   const isOwner=typeof W!=="undefined"&&W.owner; S.tf ||= "all";
   const fl=[["all","Все"],["me","Мои"],...(isOwner?team().filter(u=>u.id!==S.uid).map(u=>[u.id,u.name]):[]),["none","Без исполнителя"]];
   $("tFilter").innerHTML=team().length?fl.map(([k,l])=>{ const c=S.tasks.filter(t=>!t.done&&tfMatch(t,k)).length; return `<button type="button" class="chip ${S.tf===k?'on':''}" data-tf="${esc(k)}">${esc(l)}${c?` <span class="muted">${c}</span>`:""}</button>`; }).join(""):"";
@@ -1380,7 +1384,8 @@ function drawAccount(){
     <div id="accTasks">${a.id?S.tasks.filter(t=>t.accountId===a.id&&!t.done).sort((x,y)=>((x.due||"9")+(x.time||"")).localeCompare((y.due||"9")+(y.time||""))).map(t=>taskItem(t,true)).join("")||'<div class="hint">Открытых задач нет.</div>':'<div class="hint">Задачи можно добавить после сохранения аккаунта.</div>'}</div>
     ${a.id?`<div class="grid" style="margin-top:6px">
       <label class="f full">Что сделать<input id="atText" placeholder="Убрать лимит на депозит"></label>
-      <label class="f">Когда<input type="date" id="atDate" value="${addDays(1)}"></label>
+      <div class="chips full" id="atQuick">${dueChips()}</div>
+      <label class="f">Когда<input type="date" id="atDate" value=""></label>
       <label class="f">Время<input type="time" id="atTime"></label>
       ${team().length?`<label class="f full">Кому<select id="atWho">${whoOptions("")}</select></label>`:""}
     </div><button class="btn" id="atAdd" style="margin-top:8px">Добавить задачу</button>`:""}
@@ -1414,6 +1419,7 @@ function drawAccount(){
     if ((name==="bookmaker"||name==="country") && !$("loginRow")){ readForm(); if(loginCard(S.editing)){ drawAccount(); return; } }
     recalc();
   });
+  if ($("atQuick")){ $("atQuick").onclick=e=>{ const c=e.target.closest("[data-add]"); if(c) pickDue($("atQuick"),$("atDate"),c); }; $("atDate").addEventListener("input",()=>syncDue($("atQuick"),$("atDate"))); }
   if ($("atAdd")) $("atAdd").onclick=async()=>{ const t=$("atText").value.trim(); if(!t){ $("atText").focus(); return; }
     if(await addTask(t,$("atDate").value,$("atTime").value,a.id,$("atWho")?.value)){ $("atText").value=""; toast("Задача добавлена"); } };
   const pwI=$("dBody").querySelector("[name=accPassword]");
@@ -1521,10 +1527,10 @@ $("bgrid").addEventListener("click",e=>{ if(e.target.closest("#addCard")) return
   const db_=e.target.closest("[data-del]"); if(db_){ e.stopPropagation(); const c=S._cardMap.get(db_.dataset.del); if(c) deleteCard(c); return; }
   const sb=e.target.closest("[data-stage]"); if(sb){ e.stopPropagation(); const c=S._cardMap.get(sb.dataset.ck); if(!c||sb.classList.contains("on")) return;
     sb.parentElement.querySelectorAll(".stg").forEach(b=>b.classList.toggle("on",b===sb)); setStage(c,sb.dataset.stage); return; } const b=e.target.closest("[data-card]"); if(b) openCard(S._cardMap.get(b.dataset.card)); });
-(function(){ const q=$("tQuick"); const opts=[["Сегодня",0],["Завтра",1],["+3 дня",3],["+7 дней",7]];
-  q.innerHTML=opts.map(([t,k])=>`<button type="button" class="chip" data-add="${k}">${t}</button>`).join("");
-  q.addEventListener("click",e=>{ const c=e.target.closest("[data-add]"); if(!c) return; $("tDate").value=addDays(+c.dataset.add); q.querySelectorAll(".chip").forEach(x=>x.classList.toggle("on",x===c)); });
-  $("tDate").addEventListener("input",()=>q.querySelectorAll(".chip").forEach(x=>x.classList.remove("on")));
+(function(){ const q=$("tQuick");
+  q.innerHTML=dueChips();   // «Без срока» — задача висит, пока её не выполнят или не удалят
+  q.addEventListener("click",e=>{ const c=e.target.closest("[data-add]"); if(!c) return; pickDue(q,$("tDate"),c); });
+  $("tDate").addEventListener("input",()=>syncDue(q,$("tDate")));
   const submit=async()=>{ const t=$("tText").value.trim(); if(!t){ $("tText").focus(); return; }
     const accTxt=$("tAcc").value.trim(); const acc=accByLabel(accTxt); if(accTxt&&!acc){ toast("Аккаунт не найден — выберите из списка."); return; }
     if(await addTask(t,$("tDate").value,$("tTime").value,acc?.id,$("tWho").value)){ $("tText").value=""; $("tTime").value=""; $("tAcc").value=""; } };
